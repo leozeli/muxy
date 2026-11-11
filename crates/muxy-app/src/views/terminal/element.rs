@@ -249,12 +249,16 @@ fn viewport_size(bounds: gpui::Size<Pixels>, cell: gpui::Size<Pixels>) -> Size {
     }
 }
 
+pub(super) fn presented_font_size(font_size: f32, window: &Window) -> Pixels {
+    px(font_size * muxy_ui::theme::Metrics::of_window(window).multiplier())
+}
+
 fn typography(
     terminal: &muxy_app_core::settings::TerminalSettings,
     palette: &Palette,
     window: &Window,
 ) -> (gpui::Font, Pixels, gpui::Size<Pixels>) {
-    let font_size = px(terminal.font_size);
+    let font_size = presented_font_size(terminal.font_size, window);
     let mut base_font = font(
         terminal
             .font_families

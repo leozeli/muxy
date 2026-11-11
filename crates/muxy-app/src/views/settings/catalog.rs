@@ -343,7 +343,9 @@ pub(super) const SETTINGS: &[Setting] = &[
     Setting {
         id: "interface-size",
         label: tr_key!("Size"),
-        description: tr_key!("Controls the scale of the app interface."),
+        description: tr_key!(
+            "Scales the whole interface, including terminals and extension pages."
+        ),
         category: Category::Appearance,
         section: tr_key!("Interface"),
     },
