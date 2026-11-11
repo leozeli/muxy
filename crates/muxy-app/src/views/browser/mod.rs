@@ -715,8 +715,12 @@ impl BrowserView {
         metrics: Metrics,
         cx: &mut Context<Self>,
     ) {
+        let metrics_changed = self.metrics != metrics;
         self.theme = theme.clone();
         self.metrics = metrics;
+        if metrics_changed {
+            cx.notify();
+        }
         for input in std::iter::once(&self.address).chain(self.find.iter().map(|find| &find.input))
         {
             input.update(cx, |input, cx| {
@@ -929,6 +933,7 @@ impl Render for BrowserView {
         let drawn = NativeBrowser::DRAWN_BY_APP;
         let shown = self.presentation.visible && !self.presentation.blocked && self.shows_page();
         let (theme, metrics) = (self.theme.clone(), self.metrics);
+        let content_scale = metrics.multiplier();
         let content = div()
             .relative()
             .flex_1()
@@ -959,6 +964,7 @@ impl Render for BrowserView {
                             window.content_mask().bounds,
                             0.0,
                             window.scale_factor(),
+                            content_scale,
                         );
                         native.set_visible(shown);
                         (drawn && shown).then(|| {

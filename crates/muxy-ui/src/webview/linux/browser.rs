@@ -37,7 +37,13 @@ impl NativeBrowser {
             gpui::point(gpui::px(0.0), gpui::px(0.0)),
             window.viewport_size(),
         );
-        browser.sync(bounds, bounds, 0.0, window.scale_factor());
+        browser.sync(
+            bounds,
+            bounds,
+            0.0,
+            window.scale_factor(),
+            crate::theme::Metrics::of_window(window).multiplier(),
+        );
         Ok((browser, events))
     }
 
@@ -113,9 +119,22 @@ impl NativeBrowser {
     pub fn set_mouse_passthrough(&self, enabled: bool) {
         self.page.set_mouse_passthrough(enabled);
     }
-    pub fn sync(&self, bounds: Bounds<Pixels>, clip: Bounds<Pixels>, radius: f64, scale: f32) {
-        self.page
-            .sync(bounds, clip, gpui::Rgba::default(), radius, scale);
+    pub fn sync(
+        &self,
+        bounds: Bounds<Pixels>,
+        clip: Bounds<Pixels>,
+        radius: f64,
+        scale: f32,
+        content_scale: f32,
+    ) {
+        self.page.sync(
+            bounds,
+            clip,
+            gpui::Rgba::default(),
+            radius,
+            scale,
+            content_scale,
+        );
     }
     pub fn occlude(&self, occlusions: &[Bounds<Pixels>]) {
         self.page.occlude(occlusions);

@@ -267,6 +267,7 @@ pub(super) struct NativeWebview {
     view: Retained<WKWebView>,
     delegate: Retained<Delegate>,
     background: Cell<Option<Rgba>>,
+    page_zoom: Cell<Option<f32>>,
 }
 
 impl NativeWebview {
@@ -344,6 +345,7 @@ impl NativeWebview {
                 view,
                 delegate,
                 background: Cell::new(Some(background)),
+                page_zoom: Cell::new(None),
             },
             receiver,
         ))
@@ -453,7 +455,11 @@ impl NativeWebview {
         background: Rgba,
         radius: f64,
         _scale: f32,
+        content_scale: f32,
     ) {
+        if self.page_zoom.replace(Some(content_scale)) != Some(content_scale) {
+            unsafe { self.view.setPageZoom(f64::from(content_scale)) };
+        }
         if self.background.replace(Some(background)) != Some(background) {
             unsafe {
                 self.view

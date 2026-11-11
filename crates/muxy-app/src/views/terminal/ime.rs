@@ -175,7 +175,7 @@ impl TerminalPane {
             .text_system()
             .shape_line(
                 text.to_owned().into(),
-                px(self.terminal.font_size),
+                super::element::presented_font_size(self.terminal.font_size, window),
                 &[TextRun {
                     len: text.len(),
                     font: base_font,
@@ -229,7 +229,7 @@ pub(super) fn paint(view: &Entity<TerminalPane>, window: &mut Window, cx: &mut A
     let background = rgb(pane.palette.background);
     let line = window.text_system().shape_line(
         pane.composition.text.clone().into(),
-        px(pane.terminal.font_size),
+        super::element::presented_font_size(pane.terminal.font_size, window),
         &[TextRun {
             len: pane.composition.text.len(),
             font: base_font,

@@ -561,7 +561,6 @@
 "Connection succeeded · Muxy %@" = "Connection succeeded · Muxy %@";
 "Continue" = "Continue";
 "Continue with Agent…" = "Continue with Agent…";
-"Controls the scale of the app interface." = "Controls the scale of the app interface.";
 "Cookies" = "Cookies";
 "Copied image is larger than 25 MiB" = "Copied image is larger than 25 MiB";
 "Copied the path" = "Copied the path";
@@ -1629,6 +1628,7 @@
 "Same as App" = "Same as App";
 "Save" = "Save";
 "Save settings, themes, extension preferences, projects, workspaces, and terminal layouts to a .muxy file." = "Save settings, themes, extension preferences, projects, workspaces, and terminal layouts to a .muxy file.";
+"Scales the whole interface, including terminals and extension pages." = "Scales the whole interface, including terminals and extension pages.";
 "Scan it with the Muxy phone app, or on another computer choose Pair with Link… in Settings → Servers and paste the link. The code works once and expires in 5 minutes." = "Scan it with the Muxy phone app, or on another computer choose Pair with Link… in Settings → Servers and paste the link. The code works once and expires in 5 minutes.";
 "Scan the code with the Muxy app. It works once and expires in 5 minutes." = "Scan the code with the Muxy app. It works once and expires in 5 minutes.";
 "Scan with the Muxy app" = "Scan with the Muxy app";

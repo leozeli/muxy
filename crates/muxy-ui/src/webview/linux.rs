@@ -127,7 +127,7 @@ pub(super) struct NativeWebview {
     hit_regions: RefCell<Option<Vec<Bounds<Pixels>>>>,
     /// The buttons pressed on the page and not yet released, one bit each.
     pressed_inside: Cell<u8>,
-    placed: Cell<Option<(u32, u32, f32)>>,
+    placed: Cell<Option<(u32, u32, f32, f32)>>,
     shown: Cell<Option<bool>>,
 }
 
@@ -310,14 +310,22 @@ impl NativeWebview {
         _background: Rgba,
         _radius: f64,
         scale: f32,
+        content_scale: f32,
     ) {
         let pixels =
             |points: Pixels| (f32::from(points) * scale).round().clamp(0.0, 16384.0) as u32;
-        let placed = (pixels(bounds.size.width), pixels(bounds.size.height), scale);
+        let placed = (
+            pixels(bounds.size.width),
+            pixels(bounds.size.height),
+            scale,
+            content_scale,
+        );
         if placed.0 == 0 || placed.1 == 0 || self.placed.replace(Some(placed)) == Some(placed) {
             return;
         }
-        self.with(move |runtime, page| page.place(runtime, placed.0, placed.1, placed.2));
+        self.with(move |runtime, page| {
+            page.place(runtime, placed.0, placed.1, placed.2, placed.3);
+        });
     }
 
     /// Called every frame, so only a change is passed on.

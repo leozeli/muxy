@@ -222,7 +222,8 @@ impl NativeWebview {
         self.0.complete_asset(id, result);
     }
 
-    /// Where the page is in the window this frame, and the display's scale.
+    /// Where the page is in the window this frame, the display's scale, and
+    /// the interface scale applied to the page's content.
     pub fn sync(
         &self,
         bounds: Bounds<Pixels>,
@@ -230,8 +231,10 @@ impl NativeWebview {
         background: Rgba,
         radius: f64,
         scale: f32,
+        content_scale: f32,
     ) {
-        self.0.sync(bounds, clip, background, radius, scale);
+        self.0
+            .sync(bounds, clip, background, radius, scale, content_scale);
     }
 
     /// App content drawn above the page, in window coordinates.

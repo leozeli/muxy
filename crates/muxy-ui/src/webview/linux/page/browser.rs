@@ -311,10 +311,9 @@ impl Page {
             browser.zoom.set(zoom);
         }
         unsafe {
-            runtime.g.webkit_web_view_set_zoom_level(
-                self.view,
-                self.scale.get() / self.unit.get() * zoom,
-            );
+            runtime
+                .g
+                .webkit_web_view_set_zoom_level(self.view, self.magnification());
         }
     }
     pub(in crate::webview::linux) fn browser_script(
