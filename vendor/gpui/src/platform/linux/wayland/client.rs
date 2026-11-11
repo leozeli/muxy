@@ -226,6 +226,13 @@ fn utf16_offset(text: &str, byte: usize) -> usize {
     text[..byte].encode_utf16().count()
 }
 
+/// fcitx sends `done` without `preedit_string` when backspace deletes the last
+/// composing character. A `done` whose serial advanced acknowledges our own
+/// cursor-rectangle commit and the composition is still there.
+fn bare_done_ends_preedit(composing: bool, serial_advanced: bool) -> bool {
+    composing && !serial_advanced
+}
+
 /// Cursor rectangle in the integer coordinates text-input-v3 sends.
 /// Truncating sub-pixel positions keeps a 0.5px layout shift from committing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,8 +309,8 @@ pub(crate) struct WaylandClientState {
     /// are not committed again; KWin replays the preedit on every commit.
     last_ime_cursor_rectangle: Option<ImeCursorRectangle>,
     ime_pre_edit: Option<Preedit>,
-    /// A `preedit_string` arrived since the last `done`. A bare `done` is only
-    /// the acknowledgement of a cursor rectangle.
+    /// A `preedit_string` arrived since the last `done`. A bare `done` is either
+    /// the acknowledgement of a cursor rectangle or the end of a composition.
     preedit_dirty: bool,
     composing: bool,
     // Surface to Window mapping
@@ -1581,6 +1588,16 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                 let last_serial = state.serial_tracker.get(SerialKind::InputMethod);
                 state.serial_tracker.update(SerialKind::InputMethod, serial);
                 if !state.preedit_dirty {
+                    if bare_done_ends_preedit(state.composing, serial != last_serial) {
+                        state.composing = false;
+                        state.last_ime_preedit = None;
+                        state.ime_pre_edit = None;
+                        let Some(window) = state.keyboard_focused_window.clone() else {
+                            return;
+                        };
+                        drop(state);
+                        window.handle_ime(ImeInput::DeleteText);
+                    }
                     return;
                 }
                 state.preedit_dirty = false;
@@ -2304,5 +2321,12 @@ mod tests {
         assert_eq!(preedit_selection_utf16("你", 0, 3), Some(0..1));
         assert_eq!(preedit_selection_utf16("你好", 3, 6), Some(1..2));
         assert_eq!(preedit_selection_utf16("你", -1, -1), None);
+    }
+
+    #[test]
+    fn a_bare_done_clears_the_last_composing_character() {
+        assert!(super::bare_done_ends_preedit(true, false));
+        assert!(!super::bare_done_ends_preedit(true, true));
+        assert!(!super::bare_done_ends_preedit(false, false));
     }
 }
