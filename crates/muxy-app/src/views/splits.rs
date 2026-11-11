@@ -579,6 +579,9 @@ fn pane_element(
             pane_name(&pane.content, title.unwrap_or(&pane.title))
         },
     );
+    let headed = pane.is_some_and(|pane| {
+        model.appearance.pane_headers && matches!(pane.content, PaneContent::Terminal { .. })
+    });
     let group = SharedString::from(format!("pane-{id}"));
     let dimmed =
         model.active_pane().is_some_and(|active| active != id) && model.visible_panes().len() > 1;
@@ -625,6 +628,9 @@ fn pane_element(
                 .flex_1()
                 .min_w(px(0.0))
                 .min_h(px(0.0))
+                // A fractional header height rounds to a pixel short of the body and
+                // leaves the wallpaper showing through that row.
+                .when(headed, |body| body.mt(px(-1.0)))
                 .child(pane_content(id, model, cx)),
         )
         .when(dimmed, |element| {
