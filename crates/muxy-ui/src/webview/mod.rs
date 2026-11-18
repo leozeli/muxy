@@ -207,8 +207,10 @@ impl NativeWebview {
         background: Rgba,
         radius: f64,
         scale: f32,
+        content_scale: f32,
     ) {
-        self.0.sync(bounds, clip, background, radius, scale);
+        self.0
+            .sync(bounds, clip, background, radius, scale, content_scale);
     }
 
     pub fn occlude(&self, occlusions: &[Cover], window: &mut Window) {

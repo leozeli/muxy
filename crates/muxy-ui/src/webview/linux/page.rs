@@ -226,6 +226,7 @@ impl Runtime {
                 input: input::State::default(),
                 unit: Cell::new(1.0),
                 scale: Cell::new(1.0),
+                content_scale: Cell::new(1.0),
                 size: Cell::new((0, 0)),
                 in_flight: Cell::new(false),
                 dirty: Cell::new(false),
@@ -601,6 +602,7 @@ pub(super) struct Page {
     input: input::State,
     unit: Cell<f64>,
     scale: Cell<f64>,
+    content_scale: Cell<f64>,
     size: Cell<(u32, u32)>,
     in_flight: Cell<bool>,
     dirty: Cell<bool>,
@@ -795,25 +797,37 @@ impl Page {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub(super) fn place(&self, runtime: &Runtime, width: u32, height: u32, scale: f32) {
+    pub(super) fn place(
+        &self,
+        runtime: &Runtime,
+        width: u32,
+        height: u32,
+        scale: f32,
+        content_scale: f32,
+    ) {
         let g = runtime.g;
         unsafe {
             let unit = f64::from(g.gtk_widget_get_scale_factor(self.window).max(1));
             let units = |pixels: u32| (f64::from(pixels) / unit).ceil() as c_int;
             self.unit.set(unit);
             self.scale.set(f64::from(scale));
+            self.content_scale.set(f64::from(content_scale));
             self.size.set((width, height));
             g.gtk_widget_set_size_request(self.view, units(width), units(height));
             g.gtk_window_resize(self.window, units(width), units(height));
-            g.webkit_web_view_set_zoom_level(
-                self.view,
-                f64::from(scale) / unit
-                    * self
-                        .browser
-                        .as_ref()
-                        .map_or(1.0, |browser| browser.zoom.get()),
-            );
+            g.webkit_web_view_set_zoom_level(self.view, self.magnification());
         }
+    }
+
+    fn magnification(&self) -> f64 {
+        webkit_zoom(
+            self.scale.get(),
+            self.unit.get(),
+            self.content_scale.get(),
+            self.browser
+                .as_ref()
+                .map_or(1.0, |browser| browser.zoom.get()),
+        )
     }
 
     pub(super) fn set_visible(&self, runtime: &Runtime, visible: bool) {
@@ -1788,5 +1802,24 @@ unsafe extern "C" fn on_menu_closed(menu: gpointer, data: gpointer) {
         page.menu.set(ptr::null_mut());
         unsafe { runtime.g.g_object_unref(menu) };
         let _ = page.events.try_send(Event::Menu(None));
+    }
+}
+
+/// One app point stays one device pixel, then the interface scale and the
+/// page's own zoom enlarge the content.
+fn webkit_zoom(display_scale: f64, gtk_unit: f64, interface_scale: f64, page_zoom: f64) -> f64 {
+    display_scale / gtk_unit * interface_scale * page_zoom
+}
+
+#[cfg(test)]
+mod tests {
+    use super::webkit_zoom;
+
+    #[test]
+    fn the_interface_scale_enlarges_the_page_without_changing_its_pixel_size() {
+        let close = |actual: f64, expected: f64| (actual - expected).abs() < 1e-12;
+        assert!(close(webkit_zoom(2.0, 2.0, 1.0, 1.0), 1.0));
+        assert!(close(webkit_zoom(2.0, 2.0, 1.4, 1.0), 1.4));
+        assert!(close(webkit_zoom(2.0, 1.0, 1.4, 1.25), 3.5));
     }
 }

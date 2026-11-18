@@ -1,7 +1,7 @@
 # Privacy Policy
 
 _Effective date: the date this document was first published at its public URL._
-_Last updated: November 14, 2026._
+_Last updated: November 18, 2026._
 
 Muxy is a developer tool made of a desktop app, a server that runs on your own computer (with the `muxy` command), and phone apps for iOS and Android that connect to that computer. This policy describes what data each part handles, what is sent to `muxy.app`, and how to turn it off.
 
@@ -11,37 +11,10 @@ Muxy is open source, so you can check everything described here in the code.
 
 - No account, no sign-up, no email required.
 - No advertising, no third-party analytics or tracking SDKs, and no data sold or shared.
-- The desktop app sends one anonymous ping a day to `muxy.app` with only the app version, operating system, and processor type. It is on by default, and you can turn it off.
 - Push notifications to your phone go through a relay at `muxy.app` that cannot read them. You can turn them off on the phone or on the computer.
 - Your terminals, prompts, code, and files never leave the computers and phones you connect.
 
 ## The desktop app
-
-### Anonymous daily ping
-
-Installed releases of the desktop app send one request a day to `https://muxy.app/api/ping`, so we can count active installs per version. The request contains only:
-
-```json
-{"version": "2.6.0", "os": "macos", "arch": "aarch64"}
-```
-
-There is no install ID, user ID, or account, and nothing about your projects, terminals, or how you use Muxy. The server, the `muxy` command, and the phone apps never send it, and neither do development builds.
-
-Like any web request, the ping comes from your IP address. Here is what `muxy.app` keeps:
-
-- One row per day per sender, holding the version, operating system, processor type, the country Cloudflare derives from the IP address, and the time of the last ping.
-- The IP address is never stored. The row holds a keyed hash of it instead (HMAC-SHA-256 with a secret key), so one computer pinging twice on the same day counts once, and the hash can't be turned back into the address without that key.
-- Rows are deleted after 90 days.
-
-`muxy.app` is served through Cloudflare, which handles the request on our behalf like any other web traffic to the site.
-
-**To turn it off**, use any one of these:
-
-- **Settings → General → Send an anonymous daily ping**
-- `muxy config set privacy.usage_ping false`
-- Start Muxy with the environment variable `DO_NOT_TRACK=1`
-
-Once it's off, nothing more is sent.
 
 ### Other connections the desktop app makes
 
@@ -122,7 +95,7 @@ The phone app itself never contacts `muxy.app` or any third-party server, apart 
 - No personal information, account, or email address.
 - No contacts, photos, location, or microphone data.
 - No terminal output, prompts, code, or file contents.
-- No usage analytics beyond the anonymous daily ping, and no crash reports.
+- No usage analytics, and no crash reports.
 - No advertising identifiers.
 - No data sold or shared with third parties.
 

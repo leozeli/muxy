@@ -161,21 +161,14 @@ fn agents_panel_docking_preserves_legacy_floating_settings_and_saved_geometry() 
 }
 
 #[test]
-fn usage_ping_is_on_by_default_and_saves_without_touching_other_sections() -> Result {
+fn a_saved_usage_ping_key_still_loads() -> Result {
     let fixture = Fixture::new()?;
-    assert!(Settings::default().privacy.usage_ping);
     let path = fixture.write(
         "settings.toml",
-        "[window]\nconfirm_running_process = false\n",
+        "[window]\nconfirm_running_process = false\n\n[privacy]\nusage_ping = false\n",
     )?;
-    let mut settings = Settings::load(&path)?;
-    assert!(settings.privacy.usage_ping);
-    settings.privacy.usage_ping = false;
-    settings.save_privacy(&path)?;
-    let loaded = Settings::load(&path)?;
-    assert!(!loaded.privacy.usage_ping);
-    assert!(!loaded.window.confirm_running_process);
-    assert!(fs::read_to_string(&path)?.contains("[privacy]\nusage_ping = false"));
+    let settings = Settings::load(&path)?;
+    assert!(!settings.window.confirm_running_process);
     Ok(())
 }
 

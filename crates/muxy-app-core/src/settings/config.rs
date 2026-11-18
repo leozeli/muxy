@@ -139,16 +139,12 @@ pub enum CloseBehavior {
     Detach,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Older settings files may still contain `usage_ping`. It is ignored.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrivacySettings {
-    pub usage_ping: bool,
-}
-
-impl Default for PrivacySettings {
-    fn default() -> Self {
-        Self { usage_ping: true }
-    }
+    #[serde(default, rename = "usage_ping", skip_serializing)]
+    _usage_ping: bool,
 }
 
 impl Default for WindowSettings {
@@ -316,11 +312,6 @@ impl Settings {
         self.validate()?;
         crate::settings::document::save_section(path, "window", &self.window)
             .map_err(|error| Error::new("window", error))
-    }
-
-    pub fn save_privacy(&self, path: &Path) -> Result<()> {
-        crate::settings::document::save_section(path, "privacy", &self.privacy)
-            .map_err(|error| Error::new("privacy", error))
     }
 
     pub fn save_clipboard(&self, path: &Path) -> Result<()> {

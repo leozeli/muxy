@@ -316,15 +316,6 @@ pub(super) const SETTINGS: &[Setting] = &[
         section: tr_key!("Worktrees"),
     },
     Setting {
-        id: "usage-ping",
-        label: tr_key!("Send an anonymous daily ping"),
-        description: tr_key!(
-            "Once a day, tells muxy.app the app version, operating system, and processor type, so we can count active installs per version. Nothing identifies you or this computer. Starting Muxy with DO_NOT_TRACK=1 also turns it off."
-        ),
-        category: Category::General,
-        section: tr_key!("Privacy"),
-    },
-    Setting {
         id: "app-language",
         label: tr_key!("App language"),
         description: tr_key!(
@@ -361,7 +352,9 @@ pub(super) const SETTINGS: &[Setting] = &[
     Setting {
         id: "interface-size",
         label: tr_key!("Size"),
-        description: tr_key!("Controls the scale of the app interface."),
+        description: tr_key!(
+            "Scales the whole interface, including terminals and extension pages."
+        ),
         category: Category::Appearance,
         section: tr_key!("Interface"),
     },
@@ -1018,7 +1011,6 @@ pub(super) fn search_aliases(id: &str) -> &'static str {
             "open files with opener default custom extension associations patterns chooser"
         }
         "extension-sidebar" => "custom replace",
-        "usage-ping" => "telemetry analytics tracking statistics",
         "server" => "stop restart connect local mac computer",
         _ => "",
     }

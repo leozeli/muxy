@@ -221,6 +221,13 @@ fn utf16_offset(text: &str, byte: usize) -> usize {
     text[..byte].encode_utf16().count()
 }
 
+/// fcitx sends `done` without `preedit_string` when backspace deletes the last
+/// composing character. A `done` whose serial advanced acknowledges our own
+/// cursor-rectangle commit and the composition is still there.
+fn bare_done_ends_preedit(composing: bool, serial_advanced: bool) -> bool {
+    composing && !serial_advanced
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ImeCursorRectangle {
     x: i32,
@@ -288,6 +295,9 @@ pub(crate) struct WaylandClientState {
     pre_edit_text: Option<String>,
     last_ime_cursor_rectangle: Option<ImeCursorRectangle>,
     ime_pre_edit: Option<Preedit>,
+    /// A `preedit_string` arrived since the last `done`. A bare `done` is either
+    /// the acknowledgement of a cursor rectangle or the end of a composition.
+    preedit_dirty: bool,
     composing: bool,
     windows: HashMap<ObjectId, WaylandWindowStatePtr>,
     outputs: HashMap<ObjectId, Output>,
@@ -375,6 +385,7 @@ impl WaylandClientStatePtr {
         };
 
         state.last_ime_cursor_rectangle = None;
+        state.preedit_dirty = false;
         text_input.enable();
         text_input.set_content_type(ContentHint::None, ContentPurpose::Normal);
         let mut cursor_rectangle = None;
@@ -396,6 +407,7 @@ impl WaylandClientStatePtr {
         let client = self.get_client();
         let mut state = client.borrow_mut();
         state.composing = false;
+        state.preedit_dirty = false;
         if let Some(text_input) = &state.text_input {
             text_input.disable();
             text_input.commit();
@@ -641,6 +653,7 @@ impl WaylandClient {
             pre_edit_text: None,
             last_ime_cursor_rectangle: None,
             ime_pre_edit: None,
+            preedit_dirty: false,
             composing: false,
             outputs: HashMap::default(),
             in_progress_outputs,
@@ -998,8 +1011,7 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                 }
                 _ => {}
             },
-            wl_registry::Event::GlobalRemove { name: _ } => {
-            }
+            wl_registry::Event::GlobalRemove { name: _ } => {}
             _ => {}
         }
     }
@@ -1532,6 +1544,7 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                 cursor_end,
             } => {
                 state.composing = text.as_ref().is_some_and(|text| !text.is_empty());
+                state.preedit_dirty = true;
                 state.ime_pre_edit = text.map(|text| Preedit {
                     selection_utf16: preedit_selection_utf16(&text, cursor_begin, cursor_end),
                     text,
@@ -1540,6 +1553,19 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
             zwp_text_input_v3::Event::Done { serial } => {
                 let last_serial = state.serial_tracker.get(SerialKind::InputMethod);
                 state.serial_tracker.update(SerialKind::InputMethod, serial);
+                if !state.preedit_dirty {
+                    if bare_done_ends_preedit(state.composing, serial != last_serial) {
+                        state.composing = false;
+                        state.ime_pre_edit = None;
+                        let Some(window) = state.keyboard_focused_window.clone() else {
+                            return;
+                        };
+                        drop(state);
+                        window.handle_ime(ImeInput::DeleteText);
+                    }
+                    return;
+                }
+                state.preedit_dirty = false;
                 let Some(window) = state.keyboard_focused_window.clone() else {
                     return;
                 };
@@ -2241,5 +2267,12 @@ mod tests {
         assert_eq!(preedit_selection_utf16("你", 0, 3), Some(0..1));
         assert_eq!(preedit_selection_utf16("你好", 3, 6), Some(1..2));
         assert_eq!(preedit_selection_utf16("你", -1, -1), None);
+    }
+
+    #[test]
+    fn a_bare_done_clears_the_last_composing_character() {
+        assert!(super::bare_done_ends_preedit(true, false));
+        assert!(!super::bare_done_ends_preedit(true, true));
+        assert!(!super::bare_done_ends_preedit(false, false));
     }
 }

@@ -418,11 +418,12 @@ impl Webview {
         self.background = page_background(theme, self.transparent);
         let data_changed = self.data != data;
         let theme_changed = self.theme != values;
+        let metrics_changed = self.metrics != metrics;
+        self.metrics = metrics;
         if data_changed || theme_changed {
             self.data = data;
             self.theme = values;
             self.palette = theme.clone();
-            self.metrics = metrics;
             if data_changed {
                 self.native
                     .evaluate(&format!("window.__muxyApplyData?.({});", self.data));
@@ -439,6 +440,8 @@ impl Webview {
                 &self.data,
                 &self.theme,
             ));
+            cx.notify();
+        } else if metrics_changed {
             cx.notify();
         }
     }
@@ -658,6 +661,7 @@ impl Render for Webview {
         )]
         let corners = px(radius as f32);
         let pass_through = self.pass_through;
+        let content_scale = self.metrics.multiplier();
         div()
             .when(!pass_through, |page| page.track_focus(&self.focus))
             .when(pass_through, |page| {
@@ -701,6 +705,7 @@ impl Render for Webview {
                             background,
                             radius,
                             window.scale_factor(),
+                            content_scale,
                         );
                         native.set_visible(visible);
                         (drawn && visible).then(|| {
@@ -771,7 +776,7 @@ fn theme_snapshot(theme: &Theme, metrics: Metrics) -> Value {
         "hover": color(theme.hover), "accent": color(theme.accent), "accentForeground": color(theme.accent_foreground),
         "accentSoft": color(theme.accent_soft), "diffAdd": color(theme.diff_add), "diffRemove": color(theme.diff_remove),
         "diffHunk": color(theme.diff_hunk), "colorScheme": if gpui::Rgba::from(theme.bg).r + gpui::Rgba::from(theme.bg).g + gpui::Rgba::from(theme.bg).b < 1.5 { "dark" } else { "light" },
-        "topbarHeight": format!("{}px", f32::from(metrics.title_bar_height()).round())
+        "topbarHeight": format!("{}px", (f32::from(metrics.title_bar_height()) / metrics.multiplier()).round())
     })
 }
 

@@ -93,12 +93,14 @@ pub(crate) fn detect(runs: &[Run], point: Point, links: &[LinkSpan]) -> Option<C
             - text[body..end]
                 .trim_start_matches(['(', '[', '<', '"', '\''])
                 .len();
-        let link_start = ["https://", "http://", "file://"]
+        let scheme_at = ["https://", "http://", "file://"]
             .into_iter()
             .filter_map(|prefix| value.find(prefix))
-            .min()
-            .unwrap_or(0);
-        let value = &value[link_start..];
+            .min();
+        let (value, link_start) = match scheme_at {
+            Some(link_start) => (url_prefix(&value[link_start..]), link_start),
+            None => (value, 0),
+        };
         let begin = offset + link_start;
         let finish = begin + value.len();
         if begin <= byte
@@ -132,6 +134,43 @@ pub(crate) fn detect(runs: &[Run], point: Point, links: &[LinkSpan]) -> Option<C
             };
     }
     None
+}
+
+fn url_prefix(text: &str) -> &str {
+    let end = text
+        .char_indices()
+        .find(|(_, character)| !is_url_character(*character))
+        .map_or(text.len(), |(index, _)| index);
+    trim(&text[..end])
+}
+
+fn is_url_character(character: char) -> bool {
+    character.is_ascii_alphanumeric()
+        || matches!(
+            character,
+            '-' | '.'
+                | '_'
+                | '~'
+                | ':'
+                | '/'
+                | '?'
+                | '#'
+                | '['
+                | ']'
+                | '@'
+                | '!'
+                | '$'
+                | '&'
+                | '\''
+                | '('
+                | ')'
+                | '*'
+                | '+'
+                | ','
+                | ';'
+                | '='
+                | '%'
+        )
 }
 
 const WIDER_ROWS: isize = 3;
@@ -404,6 +443,7 @@ mod tests {
             ("src/main.rs:12:3", "src/main.rs:12:3"),
             ("\"/tmp/my file.rs\"", "/tmp/my file.rs"),
             ("file:///tmp/my%20file.rs", "file:///tmp/my%20file.rs"),
+            ("http://127.0.0.1:6170>next", "http://127.0.0.1:6170"),
         ] {
             let byte = text.find(expected).unwrap();
             let candidate = detect(
@@ -495,6 +535,32 @@ mod tests {
             ),
             None,
             "an empty row ends it"
+        );
+    }
+
+    #[test]
+    fn detection_stops_a_url_before_the_following_sentence() {
+        let prefix = "打开 ";
+        let url = "http://127.0.0.1:6170";
+        let suffix = "。左边是对话";
+        let runs = [
+            run(prefix, 5),
+            run(url, u16::try_from(url.len()).unwrap()),
+            run(suffix, 11),
+        ];
+        let candidate = detect(&runs, Point { row: 0, column: 7 }, &[]).unwrap();
+        assert_eq!(candidate.text, url);
+        assert_eq!(candidate.columns, 5..5 + u16::try_from(url.len()).unwrap());
+        assert!(
+            detect(
+                &runs,
+                Point {
+                    row: 0,
+                    column: 5 + u16::try_from(url.len()).unwrap(),
+                },
+                &[],
+            )
+            .is_none()
         );
     }
 

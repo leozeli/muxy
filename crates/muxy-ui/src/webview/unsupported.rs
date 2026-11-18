@@ -75,6 +75,7 @@ impl NativeWebview {
         _background: Rgba,
         _radius: f64,
         _scale: f32,
+        _content_scale: f32,
     ) {
         match *self {}
     }
