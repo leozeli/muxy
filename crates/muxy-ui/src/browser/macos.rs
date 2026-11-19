@@ -153,7 +153,14 @@ impl NativeBrowser {
         self.host.set_mouse_passthrough(enabled);
     }
 
-    pub fn sync(&self, bounds: Bounds<Pixels>, clip: Bounds<Pixels>, radius: f64, _scale: f32) {
+    pub fn sync(
+        &self,
+        bounds: Bounds<Pixels>,
+        clip: Bounds<Pixels>,
+        radius: f64,
+        _scale: f32,
+        _content_scale: f32,
+    ) {
         self.host.sync(bounds, clip, radius);
     }
 

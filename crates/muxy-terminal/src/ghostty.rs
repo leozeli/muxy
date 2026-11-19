@@ -114,6 +114,7 @@ pub struct Terminal {
     graphics_cache: crate::graphics::Cache,
     inline_images: crate::graphics::Interceptor,
     cell: crate::CellSize,
+    color_scheme_reporting: bool,
 }
 
 impl Terminal {
@@ -220,6 +221,7 @@ impl Terminal {
         progress: Rc<RefCell<crate::progress::Progress>>,
     ) -> Result<Self, TerminalError> {
         let create = |error| TerminalError::wrap(TerminalStep::Create, error);
+        let color_scheme_reporting = engine.mode(Mode::COLOR_SCHEME_REPORT).unwrap_or(false);
         Ok(Self {
             engine,
             render: RenderState::new().map_err(create)?,
@@ -248,6 +250,7 @@ impl Terminal {
             graphics_cache: crate::graphics::Cache::new().map_err(create)?,
             inline_images: crate::graphics::Interceptor::default(),
             cell: crate::CellSize::default(),
+            color_scheme_reporting,
         })
     }
 
@@ -301,14 +304,7 @@ impl Terminal {
                 .mode(Mode::COLOR_SCHEME_REPORT)
                 .map_err(colors)?
         {
-            let [r, g, b] = defaults.background;
-            let mut report = [0; 16];
-            let len = color_scheme(RgbColor { r, g, b })
-                .encode_report(&mut report)
-                .map_err(colors)?;
-            self.pty_output
-                .borrow_mut()
-                .extend_from_slice(&report[..len]);
+            self.push_color_scheme_report()?;
         }
         Ok(())
     }
@@ -357,6 +353,30 @@ impl Terminal {
             }
             Piece::Iterm(file) => crate::graphics::show_iterm(engine, *cell, file),
         });
+        self.report_color_scheme_if_enabled();
+    }
+
+    fn report_color_scheme_if_enabled(&mut self) {
+        let reporting = self.engine.mode(Mode::COLOR_SCHEME_REPORT).unwrap_or(false);
+        if reporting && !self.color_scheme_reporting && self.push_color_scheme_report().is_ok() {
+            self.color_scheme_reporting = true;
+        } else if !reporting {
+            self.color_scheme_reporting = false;
+        }
+    }
+
+    fn push_color_scheme_report(&mut self) -> Result<(), TerminalError> {
+        let colors = |error| TerminalError::wrap(TerminalStep::Colors, error);
+        let scheme = match self.engine.default_bg_color().map_err(colors)? {
+            Some(background) => color_scheme(background),
+            None => ColorScheme::Dark,
+        };
+        let mut report = [0; 16];
+        let len = scheme.encode_report(&mut report).map_err(colors)?;
+        self.pty_output
+            .borrow_mut()
+            .extend_from_slice(&report[..len]);
+        Ok(())
     }
 
     /// Clear the primary screen and history; queue a shell redraw only at a semantic prompt.

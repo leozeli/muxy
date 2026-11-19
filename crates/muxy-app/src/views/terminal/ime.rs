@@ -244,7 +244,6 @@ pub(super) fn paint(view: &Entity<TerminalPane>, window: &mut Window, cx: &mut A
     let caret = utf8_offset(&pane.composition.text, pane.composition.selection.end);
     let caret_text = pane.composition.text[..caret].to_owned();
     let caret_x = pane.composition_width(&caret_text, window);
-    drop(pane);
     window.paint_quad(fill(bounds, background));
     let _ = line.paint(bounds.origin, bounds.size.height, window, cx);
     window.paint_quad(fill(

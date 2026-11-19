@@ -925,15 +925,52 @@ fn render_snapshot(snapshot: muxy_ui::webview::Snapshot) -> Option<gpui::RenderI
     Some(gpui::RenderImage::new([image::Frame::new(pixels)]))
 }
 
-impl Render for BrowserView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl BrowserView {
+    fn page_canvas(&self, drawn: bool, shown: bool) -> impl IntoElement {
         let (native, pointer) = (self.native.clone(), self.pointer.clone());
         let page_origin = self.page_origin.clone();
         let cursor = self.cursor;
+        let content_scale = self.metrics.multiplier();
+        canvas(
+            move |bounds, window, _| {
+                page_origin.set(bounds.origin);
+                native.sync(
+                    bounds,
+                    window.content_mask().bounds,
+                    0.0,
+                    window.scale_factor(),
+                    content_scale,
+                );
+                native.set_visible(shown);
+                (drawn && shown).then(|| {
+                    (
+                        native,
+                        window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+                    )
+                })
+            },
+            move |bounds, page, window, _| {
+                if let Some((native, hitbox)) = page {
+                    pointer.forward(
+                        move |event| native.pointer(event),
+                        bounds,
+                        hitbox,
+                        cursor,
+                        window,
+                    );
+                }
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+}
+
+impl Render for BrowserView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let drawn = NativeBrowser::DRAWN_BY_APP;
         let shown = self.presentation.visible && !self.presentation.blocked && self.shows_page();
         let (theme, metrics) = (self.theme.clone(), self.metrics);
-        let content_scale = metrics.multiplier();
         let content = div()
             .relative()
             .flex_1()
@@ -955,40 +992,7 @@ impl Render for BrowserView {
                     .clone()
                     .map(|error| pages::error(&error, &theme, metrics, cx)),
             )
-            .child(
-                canvas(
-                    move |bounds, window, _| {
-                        page_origin.set(bounds.origin);
-                        native.sync(
-                            bounds,
-                            window.content_mask().bounds,
-                            0.0,
-                            window.scale_factor(),
-                            content_scale,
-                        );
-                        native.set_visible(shown);
-                        (drawn && shown).then(|| {
-                            (
-                                native,
-                                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-                            )
-                        })
-                    },
-                    move |bounds, page, window, _| {
-                        if let Some((native, hitbox)) = page {
-                            pointer.forward(
-                                move |event| native.pointer(event),
-                                bounds,
-                                hitbox,
-                                cursor,
-                                window,
-                            );
-                        }
-                    },
-                )
-                .absolute()
-                .size_full(),
-            );
+            .child(self.page_canvas(drawn, shown));
         div()
             .track_focus(&self.focus)
             .key_context("Browser")

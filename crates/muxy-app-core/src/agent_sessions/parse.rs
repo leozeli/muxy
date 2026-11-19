@@ -40,10 +40,19 @@ pub(super) fn read(
     let mut metadata = Metadata::default();
     let mut line = Vec::new();
     let mut consumed = 0;
+    let mut saw_newline = false;
     while reader.read_until(b'\n', &mut line)? > 0 {
         consumed += line.len() as u64;
         *budget = budget.saturating_sub(line.len() as u64);
-        if let Some(value) = json_record(&line) {
+        if line.last() == Some(&b'\n') {
+            saw_newline = true;
+            if let Some(value) = json_record(&line) {
+                metadata.visit(provider, &value, false);
+            }
+        } else if !saw_newline
+            && consumed == length
+            && let Some(value) = json_record(&line)
+        {
             metadata.visit(provider, &value, false);
         }
         line.clear();
@@ -60,7 +69,9 @@ pub(super) fn read(
         }
         while tail.read_until(b'\n', &mut line)? > 0 {
             *budget = budget.saturating_sub(line.len() as u64);
-            if let Some(value) = json_record(&line) {
+            if line.last() == Some(&b'\n')
+                && let Some(value) = json_record(&line)
+            {
                 metadata.visit(provider, &value, true);
             }
             line.clear();

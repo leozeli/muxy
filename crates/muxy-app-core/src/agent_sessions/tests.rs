@@ -104,49 +104,10 @@ fn reads_native_formats_and_scopes_to_the_exact_project() -> Result {
         home.path().join(".cursor/chats/bucket/cursor-1/store.db"),
         [],
     )?;
-    fixture(
-        home.path(),
-        ".cursor/chats/bucket/cursor-sub/meta.json",
-        &[
-            json!({"schemaVersion":1,"createdAtMs":1,"hasConversation":true,"isSubagent":true,"title":"child","cwd":project}),
-        ],
-    )?;
-    fs::write(
-        home.path().join(".cursor/chats/bucket/cursor-sub/store.db"),
-        [],
-    )?;
-    fixture(
-        home.path(),
-        ".cursor/chats/bucket/cursor-empty/meta.json",
-        &[
-            json!({"schemaVersion":1,"createdAtMs":1,"hasConversation":false,"title":"empty","cwd":project}),
-        ],
-    )?;
-    fs::write(
-        home.path()
-            .join(".cursor/chats/bucket/cursor-empty/store.db"),
-        [],
-    )?;
-    fixture(
-        home.path(),
-        ".cursor/chats/bucket/cursor-nostore/meta.json",
-        &[
-            json!({"schemaVersion":1,"createdAtMs":1,"hasConversation":true,"title":"missing","cwd":project}),
-        ],
-    )?;
     let roots = Roots::from_home(home.path());
     let mut catalog = Catalog::default();
     let listing = catalog.scan(&roots, &project);
     assert_eq!(listing.sessions.len(), 8);
-    assert_eq!(
-        listing
-            .sessions
-            .iter()
-            .filter(|session| session.provider == AgentProvider::Cursor)
-            .map(|session| (session.id.as_str(), session.title.as_str()))
-            .collect::<Vec<_>>(),
-        [("cursor-1", "Fix regression")]
-    );
     assert!(listing.warnings.is_empty());
     for provider in PROVIDERS
         .into_iter()
@@ -162,6 +123,61 @@ fn reads_native_formats_and_scopes_to_the_exact_project() -> Result {
     let listing = catalog.scan(&roots, &worktree);
     assert_eq!(listing.sessions.len(), 1);
     assert_eq!(listing.sessions[0].id, "worktree-1");
+    Ok(())
+}
+
+#[test]
+fn cursor_filters_subagents_empty_chats_and_missing_stores() -> Result {
+    let home = tempfile::tempdir()?;
+    let project = home.path().join("project");
+    fs::create_dir_all(&project)?;
+    let cases = [
+        (
+            "cursor-1",
+            true,
+            json!({"schemaVersion":1,"createdAtMs":1,"hasConversation":true,"title":"Fix regression","cwd":&project}),
+        ),
+        (
+            "cursor-sub",
+            true,
+            json!({"schemaVersion":1,"createdAtMs":1,"hasConversation":true,"isSubagent":true,"title":"child","cwd":&project}),
+        ),
+        (
+            "cursor-empty",
+            true,
+            json!({"schemaVersion":1,"createdAtMs":1,"hasConversation":false,"title":"empty","cwd":&project}),
+        ),
+        (
+            "cursor-nostore",
+            false,
+            json!({"schemaVersion":1,"createdAtMs":1,"hasConversation":true,"title":"missing","cwd":&project}),
+        ),
+    ];
+    for (name, with_store, record) in cases {
+        fixture(
+            home.path(),
+            &format!(".cursor/chats/bucket/{name}/meta.json"),
+            &[record],
+        )?;
+        if with_store {
+            fs::write(
+                home.path()
+                    .join(format!(".cursor/chats/bucket/{name}/store.db")),
+                [],
+            )?;
+        }
+    }
+    let roots = Roots::from_home(home.path());
+    let listing = Catalog::default().scan(&roots, &project);
+    assert!(listing.warnings.is_empty());
+    assert_eq!(
+        listing
+            .sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session.title.as_str()))
+            .collect::<Vec<_>>(),
+        [("cursor-1", "Fix regression")]
+    );
     Ok(())
 }
 
