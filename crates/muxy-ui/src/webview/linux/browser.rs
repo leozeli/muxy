@@ -65,7 +65,7 @@ impl NativeBrowser {
                 allows: options.allows,
             }),
             script: String::new(),
-            transparent: false,
+            background: None,
             events: output.clone(),
             shared: shared.clone(),
         };
@@ -88,6 +88,7 @@ impl NativeBrowser {
                     pressed_inside: Cell::new(0),
                     placed: Cell::new(None),
                     shown: Cell::new(None),
+                    background: Cell::new(None),
                 },
                 visible: Cell::new(false),
                 focused: Cell::new(false),
