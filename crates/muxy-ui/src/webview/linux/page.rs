@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use gpui::{Bounds, CursorStyle, Modifiers, MouseButton, Pixels, Point, point, px, size};
+use gpui::{Bounds, CursorStyle, Modifiers, MouseButton, Pixels, Point, Rgba, point, px, size};
 use muxy_core::worker::WorkerPool;
 
 use super::ffi::{
@@ -54,7 +54,7 @@ pub(super) struct Setup {
     pub(super) source: Option<Source>,
     pub(super) browser: Option<browser::Setup>,
     pub(super) script: String,
-    pub(super) transparent: bool,
+    pub(super) background: Option<Rgba>,
     pub(super) events: Events,
     pub(super) shared: Arc<Shared>,
 }
@@ -235,7 +235,7 @@ impl Runtime {
                 .as_ref()
                 .map_or_else(|| self.context(), browser::State::context);
             let (manager, view) = web_view(g, context, data, browser.is_some());
-            let window = offscreen_window(g, view, setup.transparent, data);
+            let window = offscreen_window(g, view, setup.background, data);
             Rc::new(Page {
                 id: setup.id,
                 token: token(),
@@ -489,8 +489,22 @@ unsafe fn web_view(g: &Api, context: gpointer, data: usize, browser: bool) -> (g
     }
 }
 
+fn background_color(background: Rgba) -> GdkRGBA {
+    GdkRGBA {
+        red: f64::from(background.r),
+        green: f64::from(background.g),
+        blue: f64::from(background.b),
+        alpha: if background.a <= 0.0 { 0.0 } else { 1.0 },
+    }
+}
+
 /// The window on no screen that `view` renders into.
-unsafe fn offscreen_window(g: &Api, view: gpointer, transparent: bool, data: usize) -> gpointer {
+unsafe fn offscreen_window(
+    g: &Api,
+    view: gpointer,
+    background: Option<Rgba>,
+    data: usize,
+) -> gpointer {
     // SAFETY: The view is live and not yet in a window.
     unsafe {
         let window = g.gtk_offscreen_window_new();
@@ -499,14 +513,9 @@ unsafe fn offscreen_window(g: &Api, view: gpointer, transparent: bool, data: usi
             g.gtk_widget_set_visual(window, visual);
         }
         g.gtk_widget_set_app_paintable(window, TRUE);
-        if transparent {
-            let clear = GdkRGBA {
-                red: 0.0,
-                green: 0.0,
-                blue: 0.0,
-                alpha: 0.0,
-            };
-            g.webkit_web_view_set_background_color(view, &raw const clear);
+        if let Some(background) = background {
+            let color = background_color(background);
+            g.webkit_web_view_set_background_color(view, &raw const color);
         }
         connect(
             g,
@@ -927,6 +936,16 @@ impl Page {
                 .as_ref()
                 .map_or(1.0, |browser| browser.zoom.get()),
         )
+    }
+
+    pub(super) fn set_background(&self, runtime: &Runtime, background: Rgba) {
+        let color = background_color(background);
+        // SAFETY: The view is live on the GTK thread.
+        unsafe {
+            runtime
+                .g
+                .webkit_web_view_set_background_color(self.view, &raw const color);
+        }
     }
 
     pub(super) fn set_visible(&self, runtime: &Runtime, visible: bool) {
@@ -1986,7 +2005,9 @@ fn webkit_zoom(display_scale: f64, gtk_unit: f64, interface_scale: f64, page_zoo
 
 #[cfg(test)]
 mod tests {
-    use super::webkit_zoom;
+    use gpui::Rgba;
+
+    use super::{background_color, webkit_zoom};
 
     #[test]
     fn the_interface_scale_enlarges_the_page_without_changing_its_pixel_size() {
@@ -1994,5 +2015,19 @@ mod tests {
         assert!(close(webkit_zoom(2.0, 2.0, 1.0, 1.0), 1.0));
         assert!(close(webkit_zoom(2.0, 2.0, 1.4, 1.0), 1.4));
         assert!(close(webkit_zoom(2.0, 1.0, 1.4, 1.25), 3.5));
+    }
+
+    #[test]
+    fn non_transparent_backgrounds_stay_opaque_for_webkit() {
+        let opaque = background_color(Rgba {
+            r: 0.13,
+            g: 0.13,
+            b: 0.13,
+            a: 0.85,
+        });
+        assert!((opaque.alpha - 1.0).abs() < 1e-12);
+
+        let clear = background_color(Rgba::default());
+        assert!((clear.alpha - 0.0).abs() < 1e-12);
     }
 }

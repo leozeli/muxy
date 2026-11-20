@@ -129,6 +129,7 @@ pub(super) struct NativeWebview {
     pressed_inside: Cell<u8>,
     placed: Cell<Option<(u32, u32, f32, f32)>>,
     shown: Cell<Option<bool>>,
+    background: Cell<Option<Rgba>>,
 }
 
 impl NativeWebview {
@@ -136,32 +137,38 @@ impl NativeWebview {
         window: &Window,
         source: Source,
         script: &str,
-        _background: Rgba,
+        background: Rgba,
         transparent_background: bool,
     ) -> Result<(Self, Receiver<Event>), String> {
         // A window the desktop does not show, as in a test, has nowhere to
         // draw a page, so no engine is started for it.
         HasWindowHandle::window_handle(window).map_err(|error| error.to_string())?;
-        Self::open(source, script, transparent_background)
+        Self::open(source, script, background, transparent_background)
     }
 
     /// Opens a page that renders off screen, whoever draws it.
     fn open(
         source: Source,
         script: &str,
+        background: Rgba,
         transparent: bool,
     ) -> Result<(Self, Receiver<Event>), String> {
         let url = source.entry_url().map_err(|error| error.to_string())?;
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let (events, receiver) = async_channel::bounded(256);
         let shared = Arc::new(Shared::default());
+        let initial = if transparent {
+            Rgba::default()
+        } else {
+            background
+        };
         let setup = Setup {
             id,
             url,
             source: Some(source),
             browser: None,
             script: script.to_owned(),
-            transparent,
+            background: Some(initial),
             events: Events::Extension(events.clone()),
             shared: shared.clone(),
         };
@@ -182,6 +189,7 @@ impl NativeWebview {
                 pressed_inside: Cell::new(0),
                 placed: Cell::new(None),
                 shown: Cell::new(None),
+                background: Cell::new((!transparent).then_some(background)),
             },
             receiver,
         ))
@@ -307,11 +315,17 @@ impl NativeWebview {
         &self,
         bounds: Bounds<Pixels>,
         _clip: Bounds<Pixels>,
-        _background: Rgba,
+        background: Rgba,
         _radius: f64,
         scale: f32,
         content_scale: f32,
     ) {
+        if let Some(current) = self.background.get()
+            && current != background
+        {
+            self.background.set(Some(background));
+            self.with(move |runtime, page| page.set_background(runtime, background));
+        }
         let pixels =
             |points: Pixels| (f32::from(points) * scale).round().clamp(0.0, 16384.0) as u32;
         let placed = (
