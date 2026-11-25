@@ -49,10 +49,11 @@ pub(super) fn read(
             if let Some(value) = json_record(&line) {
                 metadata.visit(provider, &value, false);
             }
-        } else if !saw_newline && consumed == length {
-            if let Some(value) = json_record(&line) {
-                metadata.visit(provider, &value, false);
-            }
+        } else if !saw_newline
+            && consumed == length
+            && let Some(value) = json_record(&line)
+        {
+            metadata.visit(provider, &value, false);
         }
         line.clear();
     }

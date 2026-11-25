@@ -48,7 +48,14 @@ impl NativeBrowser {
     pub fn set_mouse_passthrough(&self, _enabled: bool) {
         match *self {}
     }
-    pub fn sync(&self, _bounds: Bounds<Pixels>, _clip: Bounds<Pixels>, _radius: f64, _scale: f32) {
+    pub fn sync(
+        &self,
+        _bounds: Bounds<Pixels>,
+        _clip: Bounds<Pixels>,
+        _radius: f64,
+        _scale: f32,
+        _content_scale: f32,
+    ) {
         match *self {}
     }
     pub fn occlude(&self, _occlusions: &[crate::webview::Cover], _window: &mut Window) {
