@@ -182,3 +182,46 @@ fn a_session_moves_only_to_a_project_that_exists() -> TestResult {
     registry.shutdown();
     Ok(())
 }
+
+#[test]
+fn ending_a_session_removes_its_uploaded_files() -> TestResult {
+    let profile = Profile::new()?;
+    let uploads = profile.0.join("uploads");
+    let registry = profile.open()?.with_uploads(uploads.clone());
+    let first = registry.create(&crate::test_support::folder(), Size { cols: 80, rows: 24 })?;
+    let second = registry.create(&crate::test_support::folder(), Size { cols: 80, rows: 24 })?;
+    let first_file = PathBuf::from(
+        registry
+            .upload(&muxy_protocol::UploadChunk {
+                session: first.id,
+                upload: OperationId::new(),
+                name: "token.txt".into(),
+                offset: 0,
+                bytes: b"secret".to_vec(),
+                last: true,
+            })?
+            .ok_or("missing uploaded file path")?,
+    );
+    let second_file = PathBuf::from(
+        registry
+            .upload(&muxy_protocol::UploadChunk {
+                session: second.id,
+                upload: OperationId::new(),
+                name: "keep.txt".into(),
+                offset: 0,
+                bytes: b"keep".to_vec(),
+                last: true,
+            })?
+            .ok_or("missing uploaded file path")?,
+    );
+    assert!(first_file.exists());
+    assert!(second_file.exists());
+    registry.end(first.id)?;
+    assert!(!first_file.exists());
+    assert!(!uploads.join(first.id.get().to_string()).exists());
+    assert!(second_file.exists());
+    registry.discard(second.id)?;
+    assert!(!second_file.exists());
+    registry.shutdown();
+    Ok(())
+}

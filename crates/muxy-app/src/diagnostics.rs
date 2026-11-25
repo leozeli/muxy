@@ -15,12 +15,20 @@ struct Trace {
     sender: SyncSender<String>,
 }
 
+fn open_private(path: &Path) -> std::io::Result<std::fs::File> {
+    muxy_core::files::private_file()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+}
+
 pub(crate) fn init(directory: &Path) {
     if !cfg!(debug_assertions) && std::env::var_os("MUXY_DIAGNOSTICS").is_none() {
         return;
     }
     let path = directory.join(format!("app-diagnostics-{}.log", std::process::id()));
-    let Ok(mut file) = std::fs::File::create(&path) else {
+    let Ok(mut file) = open_private(&path) else {
         return;
     };
     let (sender, receiver) = sync_channel::<String>(1024);
@@ -35,7 +43,7 @@ pub(crate) fn init(directory: &Path) {
                     if std::fs::rename(&output, &previous).is_err() {
                         break;
                     }
-                    let Ok(next) = std::fs::File::create(&output) else {
+                    let Ok(next) = open_private(&output) else {
                         break;
                     };
                     file = next;

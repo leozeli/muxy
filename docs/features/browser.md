@@ -47,6 +47,11 @@ zoom, and back/forward history start fresh.
 Turn off **Settings → Browser → Enable built-in browser** to disable browser
 tabs and `muxy browser`. Terminal links then open in your system browser.
 
+To keep browser tabs usable while blocking `muxy browser` CLI and extension
+automation (including cookie access and script evaluation), set
+`browser.automation = false` in `settings.toml` or run
+`muxy settings set browser.automation false`.
+
 ## Linux
 
 The browser uses WebKitGTK 4.1, version 2.42 or newer. It shares the Linux

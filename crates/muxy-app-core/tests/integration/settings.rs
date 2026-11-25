@@ -169,6 +169,22 @@ fn a_saved_usage_ping_key_still_loads() -> Result {
     )?;
     let settings = Settings::load(&path)?;
     assert!(!settings.window.confirm_running_process);
+    assert!(settings.privacy.check_app_updates);
+    assert!(settings.privacy.check_extension_updates);
+    Ok(())
+}
+
+#[test]
+fn privacy_update_and_browser_automation_settings_round_trip() -> Result {
+    let fixture = Fixture::new()?;
+    let profile = muxy_app_core::settings::keys::Profile::new(fixture.0.clone());
+    profile.set("privacy.check_app_updates", "false")?;
+    profile.set("privacy.check_extension_updates", "false")?;
+    profile.set("browser.automation", "false")?;
+    let settings = Settings::load(&profile.settings_path())?;
+    assert!(!settings.privacy.check_app_updates);
+    assert!(!settings.privacy.check_extension_updates);
+    assert!(!settings.browser.automation);
     Ok(())
 }
 

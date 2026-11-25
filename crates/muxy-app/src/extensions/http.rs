@@ -133,7 +133,7 @@ fn public_addresses(host: &str) -> Result<Vec<SocketAddr>, String> {
     Ok(addresses)
 }
 
-struct PublicOnly;
+pub(crate) struct PublicOnly;
 
 impl reqwest::dns::Resolve for PublicOnly {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {

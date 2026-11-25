@@ -35,6 +35,9 @@ impl AppModel {
                 Err("the built-in browser is disabled".into())
             });
         }
+        if !self.settings.browser.automation {
+            return Task::ready(Err("browser automation is disabled".into()));
+        }
         self.browser_request(verb, args, window, cx)
             .unwrap_or_else(|error| Task::ready(Err(error)))
     }

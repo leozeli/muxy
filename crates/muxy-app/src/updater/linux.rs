@@ -23,6 +23,15 @@ pub(crate) struct PreparedUpdate {
 }
 
 impl Installation {
+    #[cfg(test)]
+    pub(crate) fn fixture() -> Self {
+        let root = crate::test_support::directory();
+        Self {
+            installer: root.join("install.py"),
+            root,
+        }
+    }
+
     pub(crate) fn detect() -> Result<Self> {
         let executable = muxy_core::executable::current_path()?;
         let root = muxy_core::bundle::linux_root(&executable).ok_or_else(|| {

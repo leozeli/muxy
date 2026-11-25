@@ -554,6 +554,7 @@ impl Registry {
         let completed = Arc::clone(&self.completed);
         let catalog = Arc::clone(&self.catalog);
         let saved = self.archive.clone();
+        let uploads = self.uploads.clone();
         move |reason| {
             let status = if saved.contains(id) {
                 muxy_protocol::SessionStatus::Ended
@@ -561,6 +562,9 @@ impl Registry {
                 muxy_protocol::SessionStatus::Unavailable
             };
             catalog.record_exit(id, status);
+            if let Err(error) = uploads.remove(id) {
+                log::warn!("session {} uploads cleanup failed: {error}", id.get());
+            }
             log::info!("session ended: {} ({reason:?})", id.get());
             let mut state = lock(&listing);
             state.sessions.remove(&id);
@@ -775,6 +779,9 @@ impl Registry {
                 continue;
             }
             drop(state);
+            if let Err(error) = self.uploads.remove(id) {
+                log::warn!("session {} uploads cleanup failed: {error}", id.get());
+            }
             if let Err(error) = self
                 .archive
                 .discard(id)
@@ -800,6 +807,9 @@ impl Registry {
         if let Some(handle) = self.handle(id) {
             let _ = handle.send(session::SessionCommand::End);
             self.wait_ended(id)?;
+        }
+        if let Err(error) = self.uploads.remove(id) {
+            log::warn!("session {} uploads cleanup failed: {error}", id.get());
         }
         self.archive
             .discard(id)

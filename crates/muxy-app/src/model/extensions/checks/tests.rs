@@ -353,3 +353,38 @@ fn failed_checks_keep_known_updates_allow_retry_and_clear_after_installation(
         })
     });
 }
+
+#[gpui::test]
+fn disabling_automatic_extension_update_checks_skips_background_and_tab_checks(
+    cx: &mut TestAppContext,
+) {
+    let (_root, model, cx) = open_model(None, cx);
+    model.update(cx, |model, _| {
+        model.settings.privacy.check_extension_updates = false;
+        model.extensions.checks.resolve = Some(|_| panic!("automatic check should be skipped"));
+    });
+    cx.executor().advance_clock(UPDATE_CHECK_INTERVAL);
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        model.update(cx, |model, cx| {
+            model.show_settings(window, cx);
+        });
+    });
+    cx.run_until_parked();
+    let settings = model.read_with(cx, |model, _| {
+        model.settings_tab.as_ref().unwrap().view.clone()
+    });
+    settings.update(cx, SettingsView::show_extensions);
+    cx.run_until_parked();
+    assert_eq!(
+        model.read_with(cx, |model, _| model.extension_update_count()),
+        0
+    );
+    model.update(cx, |model, cx| {
+        model.extensions.checks.resolve = Some(|names| Ok(newer(names)));
+        model.check_extension_updates(cx);
+    });
+    pump_until(cx, |cx| {
+        model.read_with(cx, |model, _| model.extension_update_count() == 1)
+    });
+}

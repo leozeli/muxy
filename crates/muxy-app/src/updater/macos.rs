@@ -25,6 +25,15 @@ pub(crate) struct PreparedUpdate {
 }
 
 impl Installation {
+    #[cfg(test)]
+    pub(crate) fn fixture() -> Self {
+        let staging = crate::test_support::directory();
+        Self {
+            bundle: staging.join("installed.app"),
+            team: "TESTTEAM00".into(),
+        }
+    }
+
     pub(crate) fn detect() -> Result<Self> {
         let app_name = Channel::current().app_name();
         release::Version::current().ok_or_else(|| {

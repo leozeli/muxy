@@ -110,7 +110,7 @@ pub(crate) fn atomic_write(path: &Path, source: &str) -> Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("settings path has no parent"))?;
     fs::create_dir_all(parent)?;
-    muxy_core::fs::write_atomic(path, source.as_bytes(), 0o644).map_err(io::Error::from)?;
+    muxy_core::fs::write_atomic(path, source.as_bytes(), 0o600).map_err(io::Error::from)?;
     Ok(())
 }
 
@@ -189,6 +189,17 @@ mod tests {
             "terminal.toml: terminal.toml is still being saved by another change; try again"
         );
         assert_eq!([fs::read(&settings)?, fs::read(&terminal)?], sources);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_settings_files_are_owner_only() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("settings.toml");
+        save_section(&path, "window", &toml::Table::new())?;
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
         Ok(())
     }
 }

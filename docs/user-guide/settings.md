@@ -240,3 +240,26 @@ opener = "system.finder"
 ```
 
 An extension opener ID is `<extension package name>:<file opener id>`.
+
+## Privacy
+
+Automatic background checks can be turned off in `settings.toml` or with
+`muxy settings set`:
+
+```toml
+[privacy]
+check_app_updates = false
+check_extension_updates = false
+
+[browser]
+automation = false
+```
+
+- `privacy.check_app_updates` controls background app update checks. Manual
+  **Check for Updates…** still works.
+- `privacy.check_extension_updates` controls background and tab-open checks
+  against the extension marketplace. Manual **Check for updates** still works.
+- `browser.automation` controls `muxy browser` CLI and extension browser
+  commands (including cookies and script evaluation) while keeping browser tabs
+  usable.
+

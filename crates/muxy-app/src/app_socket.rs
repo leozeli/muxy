@@ -42,6 +42,13 @@ pub(crate) fn listen(path: &Path) -> io::Result<(AppSocket, async_channel::Recei
         ));
     }
     let _ = std::fs::remove_file(path);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        && !parent.try_exists()?
+    {
+        muxy_core::files::private_dir(parent)?;
+    }
     let listener = LocalListener::bind(path)?;
     #[cfg(unix)]
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
@@ -53,6 +60,9 @@ pub(crate) fn listen(path: &Path) -> io::Result<(AppSocket, async_channel::Recei
             for stream in listener.incoming().flatten() {
                 if requests.is_closed() {
                     break;
+                }
+                if !same_user(&stream) {
+                    continue;
                 }
                 let requests = requests.clone();
                 let busy = Arc::clone(&busy);
@@ -99,4 +109,16 @@ fn answer(mut stream: LocalStream, requests: &async_channel::Sender<Incoming>) -
     };
     stream.write_all(&encode_reply(&result))?;
     stream.flush()
+}
+
+fn same_user(stream: &LocalStream) -> bool {
+    #[cfg(unix)]
+    {
+        muxy_protocol::transport::peer_is_same_user(stream).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = stream;
+        true
+    }
 }

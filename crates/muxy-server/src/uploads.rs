@@ -2,13 +2,13 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use muxy_protocol::{ErrorCode, ServerPath, UploadChunk};
+use muxy_protocol::{ErrorCode, ServerPath, SessionId, UploadChunk};
 
 use crate::ServerError;
 
 const NAME_BYTES: usize = 240;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Uploads {
     directory: PathBuf,
 }
@@ -51,6 +51,40 @@ impl Uploads {
         }
         Ok(Some(ServerPath::from(kept?)))
     }
+
+    pub(crate) fn remove(&self, session: SessionId) -> io::Result<()> {
+        if !owned_directory(&self.directory)? {
+            return Ok(());
+        }
+        let folder = self.directory.join(session.get().to_string());
+        if !owned_directory(&folder)? {
+            return Ok(());
+        }
+        match fs::remove_dir_all(&folder) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn owned_directory(path: &Path) -> io::Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(not_own(path));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(not_own(path));
+        }
+    }
+    Ok(true)
 }
 
 fn private_folder(path: &Path) -> io::Result<()> {
@@ -347,6 +381,58 @@ mod tests {
         assert_eq!(Path::new(&kept).extension(), Some("png".as_ref()));
         assert_eq!(numbered(".env", 2), ".env-2");
         assert_eq!(numbered("a.tar.gz", 3), "a.tar-3.gz");
+    }
+
+    #[test]
+    fn remove_deletes_only_the_session_folder_and_refuses_symlinks() {
+        let (root, uploads) = uploads();
+        let first = SessionId::new(7).unwrap();
+        let second = SessionId::new(8).unwrap();
+        let first_path = PathBuf::from(
+            uploads
+                .receive(&UploadChunk {
+                    session: first,
+                    upload: OperationId::new(),
+                    name: "secret.png".into(),
+                    offset: 0,
+                    bytes: b"one".to_vec(),
+                    last: true,
+                })
+                .unwrap()
+                .unwrap(),
+        );
+        let second_path = PathBuf::from(
+            uploads
+                .receive(&UploadChunk {
+                    session: second,
+                    upload: OperationId::new(),
+                    name: "keep.png".into(),
+                    offset: 0,
+                    bytes: b"two".to_vec(),
+                    last: true,
+                })
+                .unwrap()
+                .unwrap(),
+        );
+        uploads.remove(first).unwrap();
+        assert!(!first_path.exists());
+        assert!(!first_path.parent().unwrap().exists());
+        assert!(second_path.exists());
+        uploads.remove(SessionId::new(99).unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            let victim = root.join("victim");
+            fs::create_dir_all(&victim).unwrap();
+            let linked_session = SessionId::new(11).unwrap();
+            std::os::unix::fs::symlink(
+                &victim,
+                root.join("uploads").join(linked_session.get().to_string()),
+            )
+            .unwrap();
+            assert!(uploads.remove(linked_session).is_err());
+            assert!(victim.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

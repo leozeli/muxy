@@ -29,7 +29,7 @@ pub(super) fn write(path: &Path, value: &Value) -> Result<(), String> {
             .parent()
             .ok_or_else(|| io::Error::other("invalid data path"))?;
         std::fs::create_dir_all(directory)?;
-        muxy_core::fs::write_atomic(path, &bytes, 0o644).map_err(Into::into)
+        muxy_core::fs::write_atomic(path, &bytes, 0o600).map_err(Into::into)
     };
     write().map_err(|error| error.to_string())
 }
@@ -177,5 +177,24 @@ impl Settings {
         }
         write(&self.path(&extension.name), &Value::Object(values.clone()))?;
         Ok(values)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn extension_storage_files_are_owner_only() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = data_file(directory.path(), "demo");
+        write(&path, &serde_json::json!({"token": "secret"})).map_err(io::Error::other)?;
+        assert_eq!(
+            std::fs::metadata(&path)?.permissions().mode() & 0o777,
+            0o600
+        );
+        Ok(())
     }
 }

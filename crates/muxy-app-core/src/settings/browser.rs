@@ -7,6 +7,7 @@ use crate::browser::{BLANK, SearchEngine, resolve_address, resolve_input};
 #[serde(default, deny_unknown_fields)]
 pub struct BrowserSettings {
     pub enabled: bool,
+    pub automation: bool,
     pub open_terminal_links: bool,
     pub default_profile: String,
     pub search_engine: SearchEngine,
@@ -17,6 +18,7 @@ impl Default for BrowserSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            automation: true,
             open_terminal_links: false,
             default_profile: String::new(),
             search_engine: SearchEngine::Google,

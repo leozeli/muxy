@@ -69,15 +69,24 @@ impl AppModel {
     }
 
     pub(super) fn start_extension_update_checks(&mut self, cx: &mut Context<Self>) {
-        self.check_extension_updates(cx);
+        self.check_extension_updates_if_enabled(cx);
         self.extensions.checks.schedule = Some(cx.spawn(async move |model, cx| {
             loop {
                 cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
-                if model.update(cx, Self::check_extension_updates).is_err() {
+                if model
+                    .update(cx, Self::check_extension_updates_if_enabled)
+                    .is_err()
+                {
                     break;
                 }
             }
         }));
+    }
+
+    pub(crate) fn check_extension_updates_if_enabled(&mut self, cx: &mut Context<Self>) {
+        if self.settings.privacy.check_extension_updates {
+            self.check_extension_updates(cx);
+        }
     }
 
     pub(crate) fn check_extension_updates(&mut self, cx: &mut Context<Self>) {

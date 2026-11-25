@@ -139,12 +139,23 @@ pub enum CloseBehavior {
     Detach,
 }
 
-/// Older settings files may still contain `usage_ping`. It is ignored.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrivacySettings {
     #[serde(default, rename = "usage_ping", skip_serializing)]
     _usage_ping: bool,
+    pub check_app_updates: bool,
+    pub check_extension_updates: bool,
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
+            _usage_ping: false,
+            check_app_updates: true,
+            check_extension_updates: true,
+        }
+    }
 }
 
 impl Default for WindowSettings {
@@ -340,6 +351,11 @@ impl Settings {
         crate::settings::document::save_section(path, "panes", &self.panes)
             .map_err(|error| Error::new("panes", error))
     }
+
+    pub fn save_privacy(&self, path: &Path) -> Result<()> {
+        crate::settings::document::save_section(path, "privacy", &self.privacy)
+            .map_err(|error| Error::new("privacy", error))
+    }
 }
 
 pub(crate) fn read_or_create(path: &Path, defaults: &str) -> Result<String> {
@@ -355,7 +371,7 @@ pub(crate) fn read_or_create(path: &Path, defaults: &str) -> Result<String> {
     {
         fs::create_dir_all(parent).map_err(|error| Error::new(context(), error))?;
     }
-    match fs::OpenOptions::new()
+    match muxy_core::files::private_file()
         .write(true)
         .create_new(true)
         .open(path)

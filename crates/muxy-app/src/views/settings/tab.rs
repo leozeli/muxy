@@ -627,7 +627,9 @@ impl SettingsTab {
                 let _ = self.model.update(cx, AppModel::read_server_settings);
             }
             SettingsEvent::CheckExtensionUpdates => {
-                let _ = self.model.update(cx, AppModel::check_extension_updates);
+                let _ = self
+                    .model
+                    .update(cx, AppModel::check_extension_updates_if_enabled);
             }
             SettingsEvent::CheckForUpdates => {
                 let _ = self

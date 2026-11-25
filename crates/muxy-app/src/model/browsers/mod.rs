@@ -40,8 +40,8 @@ pub(crate) struct Browsers {
     pub views: HashMap<PaneId, Surface>,
     profiles: Option<ProfileManager>,
     retiring: HashSet<String>,
-    favicons: HashMap<String, Option<Arc<gpui::RenderImage>>>,
-    favicons_loading: HashMap<String, Vec<PaneId>>,
+    favicons: HashMap<crate::favicon::CacheKey, Option<Arc<gpui::RenderImage>>>,
+    favicons_loading: HashMap<crate::favicon::CacheKey, Vec<PaneId>>,
     focus_address: HashSet<PaneId>,
     opened_by_page: HashSet<PaneId>,
     save: Option<Task<()>>,
@@ -300,7 +300,7 @@ impl AppModel {
             }
             BrowserViewEvent::External(url) => self.open_externally(url.clone(), None, cx),
             BrowserViewEvent::Copied => self.show_notice(tr!("Copied!").to_string(), cx),
-            BrowserViewEvent::Favicon(url) => self.load_favicon(pane, url.clone(), cx),
+            BrowserViewEvent::Favicon(url) => self.load_favicon(pane, url, cx),
             BrowserViewEvent::Menu(menu, position) => {
                 self.open_browser_menu(pane, *menu, *position, window, cx);
             }
@@ -522,33 +522,39 @@ impl AppModel {
         }
     }
 
-    fn load_favicon(&mut self, pane: PaneId, url: String, cx: &mut Context<Self>) {
-        if let Some(image) = self.browsers.favicons.get(&url) {
+    fn load_favicon(&mut self, pane: PaneId, url: &str, cx: &mut Context<Self>) {
+        let page_url = self
+            .browser_view(pane)
+            .map(|view| view.read(cx).page.url.clone());
+        let Some(key) = crate::favicon::cache_key(url, page_url.as_deref()) else {
+            return;
+        };
+        if let Some(image) = self.browsers.favicons.get(&key) {
             let image = image.clone();
             if let Some(view) = self.browser_view(pane) {
                 view.update(cx, |view, cx| view.set_favicon(image, cx));
             }
             return;
         }
-        if let Some(waiting) = self.browsers.favicons_loading.get_mut(&url) {
+        if let Some(waiting) = self.browsers.favicons_loading.get_mut(&key) {
             waiting.push(pane);
             return;
         }
-        let Some(fetched) = crate::favicon::submit(url.clone()) else {
+        let Some(fetched) = crate::favicon::submit(key.clone()) else {
             return;
         };
         self.browsers
             .favicons_loading
-            .insert(url.clone(), vec![pane]);
+            .insert(key.clone(), vec![pane]);
         cx.spawn(async move |model, cx| {
             let image = fetched.recv().await.ok().flatten().map(Arc::new);
             let _ = model.update(cx, |model, cx| {
                 let waiting = model
                     .browsers
                     .favicons_loading
-                    .remove(&url)
+                    .remove(&key)
                     .unwrap_or_default();
-                model.browsers.favicons.insert(url, image.clone());
+                model.browsers.favicons.insert(key, image.clone());
                 for pane in waiting {
                     if let Some(view) = model.browser_view(pane) {
                         view.update(cx, |view, cx| view.set_favicon(image.clone(), cx));
