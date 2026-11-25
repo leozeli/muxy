@@ -10,7 +10,7 @@ fn newer_release_replaces_downloaded_update_and_preserves_schedule(cx: &mut Test
     view.update(cx, |model, cx| {
         model.servers.local.connection = ConnectionState::Ready;
         model.updates.server = Some(muxy_protocol::ServerInfo::current());
-        model.updates.ready = Some(PreparedUpdate::fixture().expect("cached update"));
+        model.updates.ready = Some(PreparedUpdate::fixture());
         model.updates.scheduled = true;
         model.updates.retry_preparation = Some(model.servers.local.generation);
         model.updates.mode = Some(UpdateMode::EndSessions);
@@ -31,7 +31,7 @@ fn newer_release_replaces_downloaded_update_and_preserves_schedule(cx: &mut Test
             cx,
         );
         assert!(model.quitting == Quitting::Idle);
-        let mut latest = PreparedUpdate::fixture().expect("latest update");
+        let mut latest = PreparedUpdate::fixture();
         latest.version = release.version;
         model.finish_update_check(Ok(Some(latest)), cx);
         assert!(!model.updates.checking());
@@ -54,4 +54,24 @@ fn newer_release_replaces_downloaded_update_and_preserves_schedule(cx: &mut Test
             .try_iter()
             .any(|(_, work)| matches!(work, Work::Flush | Work::PrepareUpdate { .. }))
     );
+}
+
+#[gpui::test]
+fn disabling_automatic_app_update_checks_skips_background_but_keeps_manual(
+    cx: &mut TestAppContext,
+) {
+    let (mut boot, _requests) = stub_boot(AppState::bootstrap().expect("state"));
+    boot.settings.privacy.check_app_updates = false;
+    let (view, cx) = cx.add_window_view(|window, cx| AppModel::new(boot, window, cx));
+    view.update(cx, |model, cx| {
+        model.updates.installation = Some(Installation::fixture());
+        model.updates.task = None;
+        model.check_for_updates(false, cx);
+        assert!(!model.updates.checking());
+        assert!(model.updates.task.is_none());
+        model.updates.installation = None;
+        model.check_for_updates(true, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt());
 }

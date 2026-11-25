@@ -19,8 +19,9 @@ use muxy_app_core::{
         },
     },
 };
+use muxy_client::input::PathQuoting;
 use muxy_core::capability::Feature;
-use muxy_protocol::{ChannelId, Modes};
+use muxy_protocol::{ChannelId, Modes, ServerPath, validate_absolute_path};
 use muxy_ui::panel::PanelId;
 use muxy_ui::tr;
 
@@ -31,8 +32,7 @@ use crate::{
     views::composer::{Composer, ComposerEvent, PANEL},
 };
 
-/// A pane to send to, with the server that attached it and its channel there.
-type Target = (PaneId, (ServerId, ChannelId), Modes);
+type Target = (PaneId, (ServerId, ChannelId), Modes, Option<PathQuoting>);
 
 pub(crate) struct ComposerRuntime {
     pub(crate) view: Option<Entity<Composer>>,
@@ -161,6 +161,60 @@ impl AppModel {
         cx.notify();
     }
 
+    pub(crate) fn composer_text(&self, cx: &gpui::App) -> String {
+        if let Some(view) = &self.composer.view {
+            return view.read(cx).draft.text.clone();
+        }
+        let key = self.composer_key();
+        self.composer
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .draft(&key)
+            .map(|draft| draft.text.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_composer_text(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self.composer.view.is_none() {
+            self.toggle_composer(window, cx);
+        }
+        let view = self
+            .composer
+            .view
+            .clone()
+            .ok_or("the composer cannot open now")?;
+        view.update(cx, |view, cx| {
+            let mut draft = view.draft.clone();
+            draft.text = text;
+            view.set_draft(draft, cx);
+        });
+        self.save_composer_draft(cx)
+    }
+
+    pub(crate) fn send_composer(
+        &mut self,
+        enter: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self.composer.view.is_none() {
+            return Err("the composer is closed".into());
+        }
+        if self.composer.submission.is_some() {
+            return Err("the composer is already sending".into());
+        }
+        if self.composer_targets(cx)?.is_empty() {
+            return Err("open a live terminal before sending".into());
+        }
+        self.submit_composer(enter, cx);
+        Ok(())
+    }
+
     pub(crate) fn close_composer(&mut self, cx: &mut Context<Self>) {
         self.dismiss_composer(self.settings.composer.clear_on_close, cx);
     }
@@ -225,8 +279,12 @@ impl AppModel {
     }
 
     fn composer_changed(&mut self, cx: &mut Context<Self>) {
+        let _ = self.save_composer_draft(cx);
+    }
+
+    fn save_composer_draft(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         let (Some(key), Some(view)) = (&self.composer.key, &self.composer.view) else {
-            return;
+            return Ok(());
         };
         let draft = view.read(cx).draft.clone();
         let result = {
@@ -239,14 +297,21 @@ impl AppModel {
                 .edit_content(key.clone(), draft.text, draft.file_attachments)
                 .map(|_| store.draft(key).cloned().unwrap_or_default())
         };
-        match result {
-            Ok(draft) => view.update(cx, |view, cx| {
-                view.draft = draft;
-                cx.notify();
-            }),
-            Err(error) => self.composer_error(error.to_string(), cx),
-        }
+        let saved = match result {
+            Ok(draft) => {
+                view.update(cx, |view, cx| {
+                    view.draft = draft;
+                    cx.notify();
+                });
+                Ok(())
+            }
+            Err(error) => {
+                self.composer_error(error.to_string(), cx);
+                Err(error.to_string())
+            }
+        };
         self.save_composer(cx);
+        saved
     }
 
     pub(super) fn save_composer(&mut self, cx: &mut Context<Self>) {
@@ -566,8 +631,6 @@ impl AppModel {
 }
 
 impl AppModel {
-    /// Closes the composer's menu with the composer, and leaves the keyboard
-    /// to the pane rather than to a composer on its way out.
     fn close_composer_menu(&mut self, cx: &mut Context<Self>) {
         use crate::views::{menu::Command, overlays::Overlay};
 
@@ -584,7 +647,6 @@ impl AppModel {
         }
     }
 
-    /// The composer's menu, drawn by the app where the system pops up none.
     pub(super) fn open_composer_menu(
         &mut self,
         choices: &[(
@@ -630,15 +692,30 @@ impl AppModel {
 #[derive(Clone)]
 enum Step {
     Text(String),
-    /// A file here: its path for this computer's terminals; another
-    /// computer's get the file sent first, and its path there.
     File(PathBuf),
-    /// An image for the clipboard; another computer gets it as a file.
-    Image(Vec<u8>),
+    Image(Arc<[u8]>),
 }
 
+const MAX_SUBMITTED_IMAGES: usize = 32;
+const MAX_SUBMITTED_IMAGE_BYTES: usize = 256 * 1024 * 1024;
+
 fn prepare(plan: &SubmissionPlan, store: &mut ComposerStore) -> Result<Vec<Step>, String> {
+    let images = plan
+        .segments
+        .iter()
+        .filter(|segment| matches!(segment, SubmissionSegment::CopiedImage { .. }))
+        .count();
+    if images > MAX_SUBMITTED_IMAGES {
+        return Err(tr!(
+            "A message can include at most %lld images.",
+            MAX_SUBMITTED_IMAGES
+        )
+        .to_string());
+    }
     let mut steps = Vec::new();
+    let mut normalized: HashMap<&str, Arc<[u8]>> = HashMap::new();
+    let mut image_bytes = 0;
+    let mut checked = std::collections::HashSet::new();
     for segment in &plan.segments {
         match segment {
             SubmissionSegment::Text(text) => steps.push(Step::Text(text.clone())),
@@ -649,25 +726,44 @@ fn prepare(plan: &SubmissionPlan, store: &mut ComposerStore) -> Result<Vec<Step>
                         tr!("Attached file is missing: %@", path.display().to_string()).to_string(),
                     );
                 }
-                quoted(std::slice::from_ref(&path))
-                    .ok_or_else(|| tr!("Invalid attachment path").to_string())?;
+                validate_absolute_path(&ServerPath::from(&path))
+                    .map_err(|_| tr!("Invalid attachment path").to_string())?;
                 steps.push(Step::File(path));
             }
             SubmissionSegment::CopiedImage { filename, .. } => {
                 let images = store
                     .image_storage()
                     .ok_or_else(|| tr!("Composer image storage is unavailable").to_string())?;
-                let png = images
-                    .normalize_png(filename)
-                    .map_err(|error| error.to_string())?;
                 if plan.image_strategy == ImageSubmissionStrategy::Clipboard {
+                    let png = if let Some(png) = normalized.get(filename.as_str()) {
+                        png.clone()
+                    } else {
+                        let png: Arc<[u8]> = images
+                            .normalize_png(filename)
+                            .map_err(|error| error.to_string())?
+                            .into();
+                        image_bytes += png.len();
+                        if image_bytes > MAX_SUBMITTED_IMAGE_BYTES {
+                            return Err(tr!(
+                                "The images in this message are too large to send together."
+                            )
+                            .to_string());
+                        }
+                        normalized.insert(filename, png.clone());
+                        png
+                    };
                     steps.push(Step::Image(png));
                 } else {
+                    if checked.insert(filename.as_str()) {
+                        images
+                            .normalize_png(filename)
+                            .map_err(|error| error.to_string())?;
+                    }
                     let path = images
                         .path_for(filename)
                         .map_err(|error| error.to_string())?;
-                    quoted(std::slice::from_ref(&path))
-                        .ok_or_else(|| tr!("Invalid image path").to_string())?;
+                    validate_absolute_path(&ServerPath::from(&path))
+                        .map_err(|_| tr!("Invalid image path").to_string())?;
                     steps.push(Step::File(path));
                 }
             }
@@ -694,19 +790,24 @@ fn prepare(plan: &SubmissionPlan, store: &mut ComposerStore) -> Result<Vec<Step>
     Ok(steps)
 }
 
-/// Paths quoted for a shell, as a terminal paste.
-fn quoted(paths: &[PathBuf]) -> Option<String> {
-    let bytes = muxy_client::input::paths(paths, Modes::default())?;
-    String::from_utf8(bytes).ok()
+fn quoted(
+    paths: &[PathBuf],
+    quoting: Option<PathQuoting>,
+    invalid: impl FnOnce() -> String,
+) -> Result<String, String> {
+    let quoting = quoting
+        .ok_or_else(|| tr!("This terminal's shell can't be sent file paths safely.").to_string())?;
+    muxy_client::input::quoted_paths(paths, quoting, Modes::default())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or_else(invalid)
 }
 
-/// Sends a file or image to the terminal's computer, and returns its path
-/// there, quoted.
 async fn send_remote(
     model: &gpui::WeakEntity<AppModel>,
     cx: &mut gpui::AsyncApp,
     pane: PaneId,
     server: ServerId,
+    quoting: Option<PathQuoting>,
     upload: Upload,
 ) -> Result<String, String> {
     let (files, session) = model
@@ -722,7 +823,9 @@ async fn send_remote(
         .background_executor()
         .spawn(async move { files.upload(session, upload) })
         .await?;
-    quoted(&paths).ok_or_else(|| tr!("The server kept the file at an invalid path.").to_string())
+    quoted(&paths, quoting, || {
+        tr!("The server kept the file at an invalid path.").to_string()
+    })
 }
 
 impl AppModel {
@@ -732,24 +835,24 @@ impl AppModel {
         pane: PaneId,
         attachment: (ServerId, ChannelId),
         generation: u64,
+        quoting: Option<PathQuoting>,
         cx: &gpui::App,
     ) -> bool {
         self.generation(attachment.0) == generation
             && &self.composer_key() == key
-            && self
-                .grids
-                .get(&pane)
-                .is_some_and(|pane| pane.view.read(cx).attachment() == Some(attachment))
+            && self.grids.get(&pane).is_some_and(|pane| {
+                let view = pane.view.read(cx);
+                view.attachment() == Some(attachment) && view.path_quoting() == quoting
+            })
     }
 
-    /// The worker and connection generation of each server the targets use.
     fn composer_workers(
         &self,
         targets: &[Target],
     ) -> HashMap<ServerId, (crate::boot::Worker, u64)> {
         targets
             .iter()
-            .filter_map(|(_, (server, _), _)| {
+            .filter_map(|(_, (server, _), _, _)| {
                 let runtime = self.servers.get(*server)?;
                 Some((*server, (runtime.work.clone()?, runtime.generation)))
             })
@@ -765,10 +868,15 @@ impl AppModel {
         let mut sessions = std::collections::HashSet::new();
         let mut targets = Vec::new();
         for id in requested {
-            let Some((session, attachment, modes)) =
+            let Some((session, attachment, modes, quoting)) =
                 self.state.pane_session(id).and_then(|(_, session)| {
                     let pane = self.grids.get(&id)?.view.read(cx);
-                    Some((session, pane.attachment()?, pane.grid.as_ref()?.modes))
+                    Some((
+                        session,
+                        pane.attachment()?,
+                        pane.grid.as_ref()?.modes,
+                        pane.path_quoting(),
+                    ))
                 })
             else {
                 return Err(
@@ -776,7 +884,7 @@ impl AppModel {
                 );
             };
             if sessions.insert((attachment.0, session)) {
-                targets.push((id, attachment, modes));
+                targets.push((id, attachment, modes, quoting));
             }
         }
         Ok(targets)
@@ -805,12 +913,11 @@ impl AppModel {
             image_attachments: composer.draft.image_attachments.clone(),
             append_return: enter,
             image_strategy: self.image_strategy(composer.settings.image_strategy),
-            target_pane_ids: targets.iter().map(|(id, _, _)| id.to_string()).collect(),
+            target_pane_ids: targets.iter().map(|(id, ..)| id.to_string()).collect(),
         });
         (!plan.is_empty()).then_some((revision, plan))
     }
 
-    /// The stored strategy, or inline paths while clipboard submission cannot run here.
     fn image_strategy(&self, stored: ImageSubmissionStrategy) -> ImageSubmissionStrategy {
         if self.supports(Feature::ClipboardImages) {
             stored
@@ -860,39 +967,39 @@ impl AppModel {
                         model.dismiss_composer(false, cx);
                     }
                 });
-                let pastes_images = steps.iter().any(|step| matches!(step, Step::Image(_))) && targets.iter().any(|(_, (server, _), _)| server.is_local());
+                let pastes_images = steps.iter().any(|step| matches!(step, Step::Image(_))) && targets.iter().any(|(_, (server, _), ..)| server.is_local());
                 let mut clipboard = if pastes_images { Some(muxy_ui::pasteboard::Lease::capture()?) } else { None };
-                for (pane, attachment, modes) in &targets {
+                for (pane, attachment, modes, quoting) in &targets {
                     let (server, channel) = *attachment;
                     let (worker, generation) = workers.get(&server).ok_or_else(|| tr!("Terminal connection closed before delivery was confirmed").to_string())?;
                     let generation = *generation;
                     let mut payload = vec![0x15];
                     for step in &steps {
-                        let current = model.update(cx, |model, cx| model.composer_target_current(&key, *pane, *attachment, generation, cx)).unwrap_or(false);
+                        let current = model.update(cx, |model, cx| model.composer_target_current(&key, *pane, *attachment, generation, *quoting, cx)).unwrap_or(false);
                         if !current { return Err(tr!("Composer target changed; sending stopped.").to_string()); }
                         match step {
                             Step::Text(text) => payload.extend(muxy_client::input::paste(text, *modes)),
                             Step::File(path) if !server.is_local() => {
-                                let remote = send_remote(&model, cx, *pane, server, Upload::Files(vec![path.clone()])).await?;
+                                let remote = send_remote(&model, cx, *pane, server, *quoting, Upload::Files(vec![path.clone()])).await?;
                                 payload.extend(muxy_client::input::paste(&remote, *modes));
                             }
                             Step::File(path) => {
-                                let text = quoted(std::slice::from_ref(path)).ok_or_else(|| tr!("Invalid attachment path").to_string())?;
+                                let text = quoted(std::slice::from_ref(path), *quoting, || tr!("Invalid attachment path").to_string())?;
                                 payload.extend(muxy_client::input::paste(&text, *modes));
                             }
                             Step::Image(png) if !server.is_local() => {
-                                let remote = send_remote(&model, cx, *pane, server, Upload::Image(png.clone(), "png")).await?;
+                                let remote = send_remote(&model, cx, *pane, server, *quoting, Upload::Image(png.to_vec(), "png")).await?;
                                 payload.extend(muxy_client::input::paste(&remote, *modes));
                             }
                             Step::Image(png) => {
                                 if !payload.is_empty() { deliver(worker, generation, channel, std::mem::take(&mut payload)).await?; }
-                                if let Some(clipboard) = &mut clipboard { clipboard.write_png(png.clone())?; }
+                                if let Some(clipboard) = &mut clipboard { clipboard.write_png(png.to_vec())?; }
                                 deliver(worker, generation, channel, vec![0x16]).await?;
                                 cx.background_executor().timer(std::time::Duration::from_millis(350)).await;
                             }
                         }
                     }
-                    let current = model.update(cx, |model, cx| model.composer_target_current(&key, *pane, *attachment, generation, cx)).unwrap_or(false);
+                    let current = model.update(cx, |model, cx| model.composer_target_current(&key, *pane, *attachment, generation, *quoting, cx)).unwrap_or(false);
                     if !current { return Err(tr!("Composer target changed; sending stopped.").to_string()); }
                     if enter { payload.push(b'\r'); }
                     if !payload.is_empty() { deliver(worker, generation, channel, payload).await?; }
@@ -944,4 +1051,57 @@ pub(super) async fn deliver(
         .recv()
         .await
         .map_err(|_| tr!("Terminal connection closed before delivery was confirmed").to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(4, 4)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn plan(filename: &str, mentions: usize) -> SubmissionPlan {
+        SubmissionPlan {
+            revision: 1,
+            segments: (0..mentions)
+                .map(|_| SubmissionSegment::CopiedImage {
+                    number: 1,
+                    filename: filename.to_owned(),
+                })
+                .collect(),
+            append_return: false,
+            image_strategy: ImageSubmissionStrategy::Clipboard,
+            target_pane_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_image_mentioned_many_times_is_prepared_once_and_counted_each_time() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut store = ComposerStore::load_from(profile.path());
+        let filename = store.image_storage().unwrap().write_source(&png()).unwrap();
+        let steps = prepare(&plan(&filename, 3), &mut store).unwrap();
+        let images: Vec<_> = steps
+            .iter()
+            .map(|step| match step {
+                Step::Image(png) => png.clone(),
+                _ => panic!("only images"),
+            })
+            .collect();
+        assert_eq!(images.len(), 3);
+        assert!(images.iter().all(|png| Arc::ptr_eq(png, &images[0])));
+
+        let error = prepare(&plan(&filename, MAX_SUBMITTED_IMAGES + 1), &mut store)
+            .err()
+            .unwrap();
+        assert!(error.contains("at most 32 images"), "{error}");
+    }
 }

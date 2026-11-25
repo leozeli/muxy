@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use super::*;
 use serde_json::{Value, json};
 
-/// Sends a `browser.*` request as the CLI does and waits for the reply.
 fn call(
     view: &Entity<AppModel>,
     cx: &mut VisualTestContext,
@@ -51,6 +50,30 @@ fn a_disabled_browser_opens_nothing_and_lists_nothing(cx: &mut TestAppContext) {
         call(&view, cx, "browser.open", &json!({})),
         Err("the built-in browser is disabled".into())
     );
+}
+
+#[gpui::test]
+fn disabling_browser_automation_blocks_commands_while_keeping_browser_enabled(
+    cx: &mut TestAppContext,
+) {
+    let (mut boot, _requests) = stub_boot(AppState::bootstrap().expect("state"));
+    boot.settings.browser.automation = false;
+    let (view, cx) = cx.add_window_view(|window, cx| AppModel::new(boot, window, cx));
+    view.read_with(cx, |model, _| {
+        assert!(model.browser_enabled());
+    });
+    for verb in [
+        "browser.list",
+        "browser.open",
+        "browser.cookies.get",
+        "browser.eval",
+    ] {
+        assert_eq!(
+            call(&view, cx, verb, &json!({})),
+            Err("browser automation is disabled".into()),
+            "{verb}"
+        );
+    }
 }
 
 #[test]

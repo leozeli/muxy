@@ -7,12 +7,10 @@ use crate::browser::{BLANK, SearchEngine, resolve_address, resolve_input};
 #[serde(default, deny_unknown_fields)]
 pub struct BrowserSettings {
     pub enabled: bool,
-    /// Terminal links open in a browser tab instead of the system browser.
+    pub automation: bool,
     pub open_terminal_links: bool,
-    /// The profile new tabs use, by ID; empty means the Default profile.
     pub default_profile: String,
     pub search_engine: SearchEngine,
-    /// The page new tabs open to; empty means the start page.
     pub home_page: String,
 }
 
@@ -20,6 +18,7 @@ impl Default for BrowserSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            automation: true,
             open_terminal_links: false,
             default_profile: String::new(),
             search_engine: SearchEngine::Google,
@@ -39,7 +38,6 @@ impl BrowserSettings {
         Ok(())
     }
 
-    /// Where new tabs go: the home page, or none for the start page.
     pub fn home_url(&self) -> Option<String> {
         let home = self.home_page.trim();
         if home.is_empty() || home == BLANK {

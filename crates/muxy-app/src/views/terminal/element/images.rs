@@ -5,32 +5,29 @@ use std::time::{Duration, Instant};
 use gpui::{Bounds, ContentMask, Pixels, Point, RenderImage, Window, point, px, size};
 use muxy_protocol::{GraphicImage, Graphics, ImageFrame, Playback, PlaybackState};
 
-/// An image and the key of one of its frames.
 type FrameKey = (u32, u64);
 
-/// The most requests for frames a pane has out at once.
 const MAX_REQUESTS: usize = 4;
 
-/// The frames of the images on screen. The server lists each image's frames
-/// and the pane reads their pixels once, then plays animations itself.
 #[derive(Default)]
 pub(crate) struct Textures {
     frames: BTreeMap<FrameKey, Arc<RenderImage>>,
-    /// Frames asked of the server. One it no longer had stays here, so it
-    /// isn't asked for again.
     asked: BTreeSet<FrameKey>,
-    /// Frames whose request failed. They stay in `asked` until `retry`, so
-    /// a repaint doesn't ask for them again at once.
     failed: BTreeSet<FrameKey>,
-    /// Requests the server hasn't answered yet.
+    unshared: BTreeSet<FrameKey>,
+    answering: BTreeSet<FrameKey>,
+    converting: BTreeSet<FrameKey>,
     requests: usize,
-    /// The frame each image last drew, kept on screen while the pixels of a
-    /// newer one are on their way.
     drawn: BTreeMap<u32, u64>,
     players: BTreeMap<u32, Player>,
     retired: Vec<Arc<RenderImage>>,
+    last: Vec<Placement>,
+    epoch: u64,
+    listed: BTreeSet<FrameKey>,
+    painted: BTreeSet<FrameKey>,
 }
 
+#[derive(Clone)]
 pub(super) struct Placement {
     image: Arc<RenderImage>,
     bounds: Bounds<Pixels>,
@@ -40,13 +37,52 @@ pub(super) struct Placement {
 
 pub(super) struct Prepared {
     pub(super) placements: Vec<Placement>,
-    /// Frames to read from the server, by image.
     pub(super) wanted: Vec<(u32, Vec<u64>)>,
-    /// When an animation's next frame is due.
+    pub(super) conversions: Vec<Conversion>,
     pub(super) next: Option<Instant>,
 }
 
-/// Where one animation is in its frames.
+pub(crate) struct Conversion {
+    key: FrameKey,
+    width: u32,
+    height: u32,
+    source: Source,
+    epoch: u64,
+}
+
+enum Source {
+    Inline(Arc<[u8]>),
+    Shared(String),
+}
+
+pub(crate) struct Converted {
+    key: FrameKey,
+    texture: Option<Arc<RenderImage>>,
+    epoch: u64,
+}
+
+impl Conversion {
+    pub(crate) fn run(self) -> Converted {
+        let texture = match &self.source {
+            Source::Inline(rgba) => Some(texture(self.width, self.height, rgba)),
+            Source::Shared(name) => (self.width as usize)
+                .checked_mul(self.height as usize)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .and_then(|len| {
+                    muxy_protocol::shared_memory::take(name, len, |rgba| {
+                        texture(self.width, self.height, rgba)
+                    })
+                    .ok()
+                }),
+        };
+        Converted {
+            key: self.key,
+            texture,
+            epoch: self.epoch,
+        }
+    }
+}
+
 struct Player {
     playback: Playback,
     index: usize,
@@ -58,15 +94,21 @@ impl Textures {
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = Arc<RenderImage>> {
         self.asked.clear();
         self.failed.clear();
+        self.unshared.clear();
+        self.answering.clear();
+        self.converting.clear();
         self.requests = 0;
         self.drawn.clear();
         self.players.clear();
+        self.last.clear();
+        self.listed.clear();
+        self.painted.clear();
+        self.epoch = self.epoch.wrapping_add(1);
         self.retired
             .drain(..)
             .chain(std::mem::take(&mut self.frames).into_values())
     }
 
-    /// Forgets every frame. A server that started again reuses the same keys.
     pub(crate) fn reset(&mut self) {
         let frames: Vec<_> = self.drain().collect();
         self.retired = frames;
@@ -76,18 +118,97 @@ impl Textures {
         self.retired.drain(..)
     }
 
-    /// Lets the frames of failed requests be asked for again.
+    #[cfg(test)]
+    pub(crate) fn has_frame(&self, image: u32, key: u64) -> bool {
+        self.frames.contains_key(&(image, key))
+    }
+
+    pub(crate) fn idle(&self) -> bool {
+        self.converting.is_empty()
+    }
+
     pub(crate) fn retry(&mut self) {
         for key in std::mem::take(&mut self.failed) {
             self.asked.remove(&key);
         }
     }
 
-    /// Takes the answer to a request for the frames `keys` of `image`, or
-    /// `None` when the request failed. Returns whether to `retry` later.
-    ///
-    /// A still image answers with the pixels it has now. When they are newer
-    /// than the ones asked for, they are drawn until the screen lists them.
+    pub(crate) fn convert(&mut self, shown: &[&Graphics]) -> Vec<Conversion> {
+        let images = || shown.iter().flat_map(|graphics| &graphics.images);
+        self.listed = images()
+            .flat_map(|image| image.frame_keys().map(|key| (image.id, key)))
+            .collect();
+        self.drawn
+            .retain(|id, _| images().any(|image| image.id == *id));
+        self.forget();
+        let mut conversions = Vec::new();
+        let listed = &self.listed;
+        self.unshared.retain(|key| listed.contains(key));
+        for image in images() {
+            let Some(key) = image.shown_key() else {
+                continue;
+            };
+            let frame = (image.id, key);
+            let source = match &image.shared {
+                _ if !image.rgba.is_empty() => Source::Inline(image.rgba.clone()),
+                Some(shared) if !self.unshared.contains(&frame) => {
+                    Source::Shared(shared.name.clone())
+                }
+                _ => continue,
+            };
+            if self.frames.contains_key(&frame) || !self.converting.insert(frame) {
+                continue;
+            }
+            conversions.push(Conversion {
+                key: frame,
+                width: image.width,
+                height: image.height,
+                source,
+                epoch: self.epoch,
+            });
+        }
+        conversions
+    }
+
+    pub(crate) fn converted(&mut self, converted: Converted) -> bool {
+        if converted.epoch == self.epoch
+            && self.converting.remove(&converted.key)
+            && self.listed.contains(&converted.key)
+        {
+            match converted.texture {
+                Some(texture) => {
+                    self.frames.entry(converted.key).or_insert(texture);
+                    if !self.players.contains_key(&converted.key.0) {
+                        self.drawn.insert(converted.key.0, converted.key.1);
+                    }
+                }
+                None => {
+                    self.unshared.insert(converted.key);
+                }
+            }
+        }
+        self.converting.is_empty()
+    }
+
+    fn forget(&mut self) {
+        let (listed, drawn, last) = (&self.listed, &self.drawn, &self.last);
+        let (painted, retired) = (&mut self.painted, &mut self.retired);
+        self.frames.retain(|key, frame| {
+            if listed.contains(key)
+                || drawn.get(&key.0) == Some(&key.1)
+                || last
+                    .iter()
+                    .any(|placement| Arc::ptr_eq(&placement.image, frame))
+            {
+                return true;
+            }
+            if painted.remove(key) {
+                retired.push(frame.clone());
+            }
+            false
+        });
+    }
+
     pub(crate) fn receive(
         &mut self,
         image: u32,
@@ -95,21 +216,22 @@ impl Textures {
         frames: Option<Vec<ImageFrame>>,
     ) -> bool {
         self.requests = self.requests.saturating_sub(1);
+        for key in keys {
+            self.answering.remove(&(image, *key));
+        }
         let Some(frames) = frames else {
             self.failed.extend(keys.iter().map(|key| (image, *key)));
             return true;
         };
-        // A reply too small for every frame leaves the rest to ask for again.
         if frames.iter().any(|frame| keys.contains(&frame.key)) {
             for key in keys {
                 self.asked.remove(&(image, *key));
             }
         }
         for frame in &frames {
-            let texture = texture(frame.width, frame.height, &frame.rgba);
-            if let Some(previous) = self.frames.insert((image, frame.key), texture) {
-                self.retired.push(previous);
-            }
+            self.frames
+                .entry((image, frame.key))
+                .or_insert_with(|| texture(frame.width, frame.height, &frame.rgba));
             if keys.contains(&frame.key) {
                 self.drawn.entry(image).or_insert(frame.key);
             } else {
@@ -119,21 +241,63 @@ impl Textures {
         false
     }
 
-    /// The images to paint at `now`. With `fetch`, it also names the frames
-    /// to read from the server; each is named once.
+    fn arriving(&self, image: &GraphicImage) -> bool {
+        image.frame_keys().any(|key| {
+            let frame = (image.id, key);
+            self.converting.contains(&frame) || self.answering.contains(&frame)
+        })
+    }
+
+    fn paint(
+        &mut self,
+        graphics: &Graphics,
+        shown: &BTreeMap<u32, (&GraphicImage, Arc<RenderImage>)>,
+        origin: Point<Pixels>,
+        cell: gpui::Size<Pixels>,
+    ) -> Vec<Placement> {
+        let waiting = graphics.placements.iter().any(|placement| {
+            !shown.contains_key(&placement.image)
+                && graphics
+                    .images
+                    .iter()
+                    .find(|image| image.id == placement.image)
+                    .is_some_and(|image| self.arriving(image))
+        });
+        if !waiting {
+            self.last = place(graphics, shown, cell);
+        }
+        for (key, frame) in &self.frames {
+            if self
+                .last
+                .iter()
+                .any(|placement| Arc::ptr_eq(&placement.image, frame))
+            {
+                self.painted.insert(*key);
+            }
+        }
+        self.forget();
+        self.last
+            .iter()
+            .map(|placement| Placement {
+                bounds: placement.bounds + origin,
+                clip: placement.clip + origin,
+                ..placement.clone()
+            })
+            .collect()
+    }
+
     pub(super) fn prepare(
         &mut self,
         graphics: &Graphics,
+        also: Option<&Graphics>,
         origin: Point<Pixels>,
         cell: gpui::Size<Pixels>,
         now: Instant,
         fetch: bool,
     ) -> Prepared {
-        let listed: BTreeSet<FrameKey> = graphics
-            .images
-            .iter()
-            .flat_map(|image| image.frame_keys().map(|key| (image.id, key)))
-            .collect();
+        let listed: Vec<&Graphics> = std::iter::once(graphics).chain(also).collect();
+        let conversions = self.convert(&listed);
+        let listed = &self.listed;
         self.asked.retain(|key| listed.contains(key));
         self.failed.retain(|key| listed.contains(key));
         self.players.retain(|id, _| {
@@ -142,26 +306,17 @@ impl Textures {
                 .iter()
                 .any(|image| image.id == *id && !image.frames.is_empty())
         });
-        self.drawn
-            .retain(|id, _| graphics.images.iter().any(|image| image.id == *id));
         let mut wanted = Vec::new();
         let mut next: Option<Instant> = None;
         let mut shown = BTreeMap::new();
         for image in &graphics.images {
             let keys: Vec<u64> = image.frame_keys().collect();
-            let listed = image.playback.frame as usize;
-            if !image.rgba.is_empty()
-                && let Some(&key) = keys.get(listed)
-            {
-                self.frames
-                    .entry((image.id, key))
-                    .or_insert_with(|| texture(image.width, image.height, &image.rgba));
-            }
             let mut missing: Vec<u64> = Vec::new();
             for &key in &keys {
                 let frame = (image.id, key);
                 if !self.frames.contains_key(&frame)
                     && !self.asked.contains(&frame)
+                    && !self.converting.contains(&frame)
                     && !missing.contains(&key)
                 {
                     missing.push(key);
@@ -169,8 +324,10 @@ impl Textures {
             }
             if fetch && !missing.is_empty() && self.requests < MAX_REQUESTS {
                 self.requests += 1;
-                self.asked
-                    .extend(missing.iter().map(|&key| (image.id, key)));
+                for &key in &missing {
+                    self.asked.insert((image.id, key));
+                    self.answering.insert((image.id, key));
+                }
                 wanted.push((image.id, missing));
             }
             let index = if image.frames.is_empty() {
@@ -200,19 +357,11 @@ impl Textures {
                 shown.insert(image.id, (image, texture.clone()));
             }
         }
-        let drawn = &self.drawn;
-        let retired = &mut self.retired;
-        self.frames.retain(|key, frame| {
-            if listed.contains(key) || drawn.get(&key.0) == Some(&key.1) {
-                return true;
-            }
-            retired.push(frame.clone());
-            false
-        });
-        let placements = place(graphics, &shown, origin, cell);
+        let placements = self.paint(graphics, &shown, origin, cell);
         Prepared {
             placements,
             wanted,
+            conversions,
             next,
         }
     }
@@ -228,14 +377,6 @@ impl Player {
         }
     }
 
-    /// The frame to show at `now`, and when the next one is due. As in
-    /// Kitty, it moves one frame at a time, so a late repaint slows the
-    /// animation instead of skipping frames, and frames with no gap are
-    /// passed over. It stays on a frame until the next one has `arrived`.
-    ///
-    /// A program that picks another frame moves the animation there. One
-    /// that only starts, stops or sets the loops leaves it where it is and
-    /// counts its loops again.
     fn advance(
         &mut self,
         image: &GraphicImage,
@@ -297,12 +438,10 @@ impl Player {
     }
 }
 
-/// Where each placement draws the frame its image shows.
 #[allow(clippy::cast_precision_loss)]
 fn place(
     graphics: &Graphics,
     shown: &BTreeMap<u32, (&GraphicImage, Arc<RenderImage>)>,
-    origin: Point<Pixels>,
     cell: gpui::Size<Pixels>,
 ) -> Vec<Placement> {
     let mut placements = Vec::new();
@@ -316,10 +455,7 @@ fn place(
             cell.width * p.column as f32 + sx * p.offset[0] as f32,
             cell.height * p.row as f32 + sy * p.offset[1] as f32,
         );
-        let clip = Bounds::new(
-            origin + offset,
-            size(sx * p.size[0] as f32, sy * p.size[1] as f32),
-        );
+        let clip = Bounds::new(offset, size(sx * p.size[0] as f32, sy * p.size[1] as f32));
         let xscale = clip.size.width / p.source[2].max(1) as f32;
         let yscale = clip.size.height / p.source[3].max(1) as f32;
         let bounds = Bounds::new(
@@ -420,10 +556,9 @@ mod tests {
     }
 
     fn prepare(textures: &mut Textures, graphics: &Graphics, now: Instant) -> Prepared {
-        textures.prepare(graphics, Point::default(), CELL, now, true)
+        textures.prepare(graphics, None, Point::default(), CELL, now, true)
     }
 
-    /// The index of the frame showing, by the texture a placement uses.
     fn showing(textures: &Textures, prepared: &Prepared) -> Option<u64> {
         let placed = &prepared.placements.first()?.image;
         textures
@@ -442,12 +577,10 @@ mod tests {
         assert_eq!(prepared.wanted, [(1, vec![10, 11])]);
         assert!(prepared.placements.is_empty());
         assert!(prepare(&mut textures, &graphics, start).wanted.is_empty());
-        // A reply that held only the first frame leaves the second to ask again.
         textures.receive(1, &[10, 11], Some(vec![frame(10)]));
         let prepared = prepare(&mut textures, &graphics, start);
         assert_eq!(prepared.wanted, [(1, vec![11])]);
         assert_eq!(showing(&textures, &prepared), Some(10));
-        // A frame the server no longer has is not asked for again.
         textures.receive(1, &[11], Some(Vec::new()));
         assert!(prepare(&mut textures, &graphics, start).wanted.is_empty());
     }
@@ -472,7 +605,6 @@ mod tests {
         assert_eq!(at(&mut textures, 39), (Some(10), due(40)));
         assert_eq!(at(&mut textures, 40), (Some(12), due(140)));
         assert_eq!(at(&mut textures, 140), (Some(10), due(180)));
-        // A late repaint moves one frame on, not two.
         assert_eq!(at(&mut textures, 900), (Some(12), due(1000)));
     }
 
@@ -498,7 +630,6 @@ mod tests {
             (showing(&textures, &waiting), waiting.next),
             (Some(11), None)
         );
-        // More frames arrive, and it plays on from where it waited.
         let mut longer = animated(&[40, 40, 40], PlaybackState::Loading, 0);
         longer.images[0].playback = loading.images[0].playback;
         let prepared = prepare(&mut textures, &longer, later(80));
@@ -525,19 +656,196 @@ mod tests {
         assert_eq!(showing(&textures, &prepared), Some(11));
     }
 
+    fn convert(textures: &mut Textures, prepared: Prepared) -> bool {
+        let mut done = true;
+        for conversion in prepared.conversions {
+            done = textures.converted(conversion.run());
+        }
+        done
+    }
+
+    fn still(id: u32, generation: u64, pixels: bool) -> Graphics {
+        let mut graphics = animated(&[], PlaybackState::Stopped, 0);
+        graphics.images[0].id = id;
+        graphics.images[0].generation = generation;
+        graphics.placements[0].image = id;
+        if pixels {
+            graphics.images[0].rgba = vec![0; 4].into();
+        }
+        graphics
+    }
+
     #[test]
     fn pixels_sent_with_the_screen_need_no_request_and_old_frames_retire() {
-        let mut graphics = animated(&[], PlaybackState::Stopped, 0);
-        graphics.images[0].rgba = vec![0; 4].into();
+        let mut graphics = still(1, 1, true);
         let mut textures = Textures::default();
         let start = Instant::now();
         let prepared = prepare(&mut textures, &graphics, start);
         assert!(prepared.wanted.is_empty());
+        assert_eq!(prepared.conversions.len(), 1);
+        assert!(convert(&mut textures, prepared));
+        let prepared = prepare(&mut textures, &graphics, start);
+        assert!(prepared.conversions.is_empty());
         assert_eq!(showing(&textures, &prepared), Some(1));
         graphics.images[0].generation = 2;
         let prepared = prepare(&mut textures, &graphics, start);
+        assert_eq!(showing(&textures, &prepared), Some(1));
+        assert!(convert(&mut textures, prepared));
+        let prepared = prepare(&mut textures, &graphics, start);
         assert_eq!(showing(&textures, &prepared), Some(2));
         assert_eq!(textures.retired().count(), 1);
+    }
+
+    #[test]
+    fn a_new_image_in_place_of_another_shows_once_its_texture_is_made() {
+        let mut textures = Textures::default();
+        let start = Instant::now();
+        let first = still(1, 1, true);
+        let prepared = prepare(&mut textures, &first, start);
+        convert(&mut textures, prepared);
+        let shown = prepare(&mut textures, &first, start).placements[0]
+            .image
+            .clone();
+
+        let second = still(2, 7, true);
+        let prepared = prepare(&mut textures, &second, start);
+        assert!(Arc::ptr_eq(&prepared.placements[0].image, &shown));
+        assert_eq!(textures.retired().count(), 0);
+        assert!(convert(&mut textures, prepared));
+        let prepared = prepare(&mut textures, &second, start);
+        assert_eq!(showing(&textures, &prepared), Some(7));
+        assert!(!Arc::ptr_eq(&prepared.placements[0].image, &shown));
+        assert_eq!(textures.retired().count(), 1);
+
+        let prepared = prepare(&mut textures, &Graphics::default(), start);
+        assert!(prepared.placements.is_empty());
+        assert_eq!(textures.retired().count(), 1);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn shared_pixels_become_a_texture_and_lost_ones_are_asked_for() -> std::io::Result<()> {
+        let mut textures = Textures::default();
+        let start = Instant::now();
+        let region = muxy_protocol::shared_memory::Region::create(&[1, 2, 3, 255])?;
+        let mut shared = still(1, 1, false);
+        shared.images[0].shared = Some(muxy_protocol::SharedPixels {
+            name: region.name().to_owned(),
+        });
+        let prepared = prepare(&mut textures, &shared, start);
+        assert!(prepared.wanted.is_empty());
+        assert!(convert(&mut textures, prepared));
+        let texture = textures
+            .frames
+            .get(&(1, 1))
+            .ok_or(std::io::ErrorKind::NotFound)?;
+        assert_eq!(texture.as_bytes(0), Some([3, 2, 1, 255].as_slice()));
+
+        let mut lost = still(2, 2, false);
+        lost.images[0].shared = Some(muxy_protocol::SharedPixels {
+            name: region.name().to_owned(),
+        });
+        let prepared = prepare(&mut textures, &lost, start);
+        assert!(prepared.wanted.is_empty());
+        assert!(convert(&mut textures, prepared));
+        assert!(!textures.has_frame(2, 2));
+        let prepared = prepare(&mut textures, &lost, start);
+        assert!(prepared.conversions.is_empty());
+        assert_eq!(prepared.wanted, [(2, vec![2])]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_picture_converted_before_it_was_painted_shows_until_a_newer_one_is_ready() {
+        let mut textures = Textures::default();
+        let start = Instant::now();
+        let first = still(1, 1, true);
+        let prepared = prepare(&mut textures, &first, start);
+        assert!(convert(&mut textures, prepared));
+        let second = still(1, 2, true);
+        let conversions = textures.convert(&[&second]);
+        let prepared = prepare(&mut textures, &second, start);
+        assert_eq!(showing(&textures, &prepared), Some(1));
+        for conversion in conversions {
+            textures.converted(conversion.run());
+        }
+        let third = still(1, 3, true);
+        let conversions = textures.convert(&[&third]);
+        assert!(textures.has_frame(1, 2));
+        for conversion in conversions {
+            textures.converted(conversion.run());
+        }
+        let prepared = prepare(&mut textures, &third, start);
+        assert_eq!(showing(&textures, &prepared), Some(3));
+    }
+
+    #[test]
+    fn an_image_converting_while_scrolled_back_is_kept_for_the_live_screen() {
+        let mut textures = Textures::default();
+        let start = Instant::now();
+        let live = still(1, 1, true);
+        let history = still(2, 2, true);
+        let started = textures.convert(&[&live, &history]);
+        let painted = textures.prepare(&history, Some(&live), Point::default(), CELL, start, true);
+        for conversion in started.into_iter().chain(painted.conversions) {
+            textures.converted(conversion.run());
+        }
+        assert!(textures.has_frame(1, 1));
+    }
+
+    #[test]
+    fn a_new_image_read_from_the_server_shows_the_old_one_until_answered() {
+        let mut textures = Textures::default();
+        let start = Instant::now();
+        let first = still(1, 1, false);
+        prepare(&mut textures, &first, start);
+        textures.receive(1, &[1], Some(vec![frame(1)]));
+        let shown = prepare(&mut textures, &first, start).placements[0]
+            .image
+            .clone();
+        let second = still(2, 2, false);
+        let prepared = prepare(&mut textures, &second, start);
+        assert_eq!(prepared.wanted, [(2, vec![2])]);
+        assert!(Arc::ptr_eq(&prepared.placements[0].image, &shown));
+        textures.receive(2, &[2], Some(Vec::new()));
+        let prepared = prepare(&mut textures, &second, start);
+        assert!(prepared.wanted.is_empty());
+        assert!(prepared.placements.is_empty());
+    }
+
+    #[test]
+    fn screens_taken_without_painting_keep_only_what_they_list() {
+        let mut textures = Textures::default();
+        let start = Instant::now();
+        let shown = still(1, 1, true);
+        let prepared = prepare(&mut textures, &shown, start);
+        convert(&mut textures, prepared);
+        prepare(&mut textures, &shown, start);
+        for id in 2..10 {
+            let conversions = textures.convert(&[&still(id, id.into(), true)]);
+            for conversion in conversions {
+                textures.converted(conversion.run());
+            }
+        }
+        assert_eq!(textures.frames.len(), 2);
+        assert_eq!(textures.retired().count(), 0);
+        let prepared = prepare(&mut textures, &still(9, 9, true), start);
+        assert_eq!(showing(&textures, &prepared), Some(9));
+        assert_eq!(textures.frames.len(), 1);
+        assert_eq!(textures.retired().count(), 1);
+    }
+
+    #[test]
+    fn a_texture_started_before_a_reset_is_dropped() {
+        let mut textures = Textures::default();
+        let start = Instant::now();
+        let graphics = still(1, 1, true);
+        let prepared = prepare(&mut textures, &graphics, start);
+        textures.reset();
+        assert!(convert(&mut textures, prepared));
+        assert!(textures.frames.is_empty());
+        let prepared = prepare(&mut textures, &graphics, start);
+        assert_eq!(prepared.conversions.len(), 1);
     }
 
     #[test]
@@ -551,8 +859,6 @@ mod tests {
         let prepared = prepare(&mut textures, &graphics, start);
         assert_eq!(prepared.wanted, [(1, vec![2])]);
         assert_eq!(showing(&textures, &prepared), Some(1));
-        // The program sent it again before the answer left: the server
-        // answers with the newest pixels, which show without another request.
         assert!(!textures.receive(1, &[2], Some(vec![frame(3)])));
         let prepared = prepare(&mut textures, &graphics, start);
         assert!(prepared.wanted.is_empty());
@@ -584,7 +890,6 @@ mod tests {
         let wanted = prepare(&mut textures, &graphics, start).wanted;
         assert_eq!(wanted.len(), MAX_REQUESTS);
         assert!(prepare(&mut textures, &graphics, start).wanted.is_empty());
-        // A request that failed waits for the retry; an answered one frees its place.
         assert!(textures.receive(1, &[1], None));
         assert!(!textures.receive(2, &[1], Some(vec![frame(1)])));
         let images = |prepared: Prepared| -> Vec<u32> {
@@ -596,13 +901,12 @@ mod tests {
         assert!(prepare(&mut textures, &graphics, start).wanted.is_empty());
         textures.retry();
         assert_eq!(images(prepare(&mut textures, &graphics, start)), [1]);
-        // A pane that can't reach the server asks for nothing.
         let mut idle = Textures::default();
-        let prepared = idle.prepare(&graphics, Point::default(), CELL, start, false);
+        let prepared = idle.prepare(&graphics, None, Point::default(), CELL, start, false);
         assert!(prepared.wanted.is_empty());
         assert!(
             !idle
-                .prepare(&graphics, Point::default(), CELL, start, true)
+                .prepare(&graphics, None, Point::default(), CELL, start, true)
                 .wanted
                 .is_empty()
         );

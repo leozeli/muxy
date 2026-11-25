@@ -326,7 +326,8 @@ impl AppModel {
     }
 
     pub(crate) fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
-        if self.quitting != Quitting::Idle {
+        if self.quitting != Quitting::Idle || (!manual && !self.settings.privacy.check_app_updates)
+        {
             return;
         }
         self.updates.manual |= manual;

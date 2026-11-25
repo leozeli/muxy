@@ -200,8 +200,9 @@ impl Metadata {
     }
 }
 
-/// One JSON value from a transcript line. Cursor writes `meta.json` as a
-/// single object and does not end the file with a newline.
+/// One JSON value from a transcript line. A JSONL line counts once it ends
+/// with a newline. Cursor writes `meta.json` as a single object and does not
+/// end that file with a newline, so a file with no newline is read too.
 fn json_record(line: &[u8]) -> Option<Value> {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     let line = line.strip_suffix(b"\r").unwrap_or(line);

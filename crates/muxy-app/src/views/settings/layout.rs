@@ -28,7 +28,6 @@ impl Category {
                 tr_key!("Files"),
                 tr_key!("Window size"),
                 tr_key!("Worktrees"),
-                tr_key!("Privacy"),
             ],
             Self::Appearance => &[
                 tr_key!("Language"),
@@ -49,7 +48,7 @@ impl Category {
 }
 
 impl SettingsView {
-    fn select_category(
+    pub(crate) fn select_category(
         &mut self,
         category: Category,
         section: Option<&'static str>,
@@ -157,7 +156,6 @@ impl SettingsView {
                     categories = categories.child(
                         navigation::subitem(
                             self.layout_style(),
-                            // The same section can sit under two open categories.
                             SharedString::from(format!(
                                 "settings-subcategory-{}-{section}",
                                 category.label()

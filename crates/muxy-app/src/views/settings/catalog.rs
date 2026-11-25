@@ -253,10 +253,28 @@ pub(super) const SETTINGS: &[Setting] = &[
         section: tr_key!("Closing terminals"),
     },
     Setting {
-        id: "file-opener",
-        label: tr_key!("Open files with"),
+        id: "always-ask-files",
+        label: tr_key!("Always show the file opener"),
         description: tr_key!(
-            "Opens files you click in a terminal. An extension opener opens only the files it supports; other files open in the project editor."
+            "Show a chooser for supported files, even with one matching extension or a saved default."
+        ),
+        category: Category::General,
+        section: tr_key!("Files"),
+    },
+    Setting {
+        id: "file-rules",
+        label: tr_key!("File type rules"),
+        description: tr_key!(
+            "The first matching available rule wins. Choose a default, Always ask, or the file manager. Assign custom types to an extension here. Remove a rule to restore automatic matching."
+        ),
+        category: Category::General,
+        section: tr_key!("Files"),
+    },
+    Setting {
+        id: "file-registrations",
+        label: tr_key!("Registered file types"),
+        description: tr_key!(
+            "Patterns declared by enabled extensions. The project app in the topbar only opens the project when clicked."
         ),
         category: Category::General,
         section: tr_key!("Files"),
@@ -296,15 +314,6 @@ pub(super) const SETTINGS: &[Setting] = &[
         ),
         category: Category::General,
         section: tr_key!("Worktrees"),
-    },
-    Setting {
-        id: "usage-ping",
-        label: tr_key!("Send an anonymous daily ping"),
-        description: tr_key!(
-            "Once a day, tells muxy.app the app version, operating system, and processor type, so we can count active installs per version. Nothing identifies you or this computer. Starting Muxy with DO_NOT_TRACK=1 also turns it off."
-        ),
-        category: Category::General,
-        section: tr_key!("Privacy"),
     },
     Setting {
         id: "app-language",
@@ -366,10 +375,28 @@ pub(super) const SETTINGS: &[Setting] = &[
         section: tr_key!("Interface"),
     },
     Setting {
+        id: "rail",
+        label: tr_key!("Show rail"),
+        description: tr_key!(
+            "Keep extension icons that ask for the rail in a column on the right, opened from the top bar. Off puts them in the top bar."
+        ),
+        category: Category::Appearance,
+        section: tr_key!("Interface"),
+    },
+    Setting {
         id: "pane-headers",
         label: tr_key!("Show pane headers"),
         description: tr_key!(
             "Show each pane's icon, title and actions above it, in the color of what it shows."
+        ),
+        category: Category::Appearance,
+        section: tr_key!("Interface"),
+    },
+    Setting {
+        id: "open-in-app-button",
+        label: tr_key!("Show Open in App button"),
+        description: tr_key!(
+            "Show the top bar button that opens the project in a file manager or an editor. Its shortcut works either way."
         ),
         category: Category::Appearance,
         section: tr_key!("Interface"),
@@ -387,6 +414,15 @@ pub(super) const SETTINGS: &[Setting] = &[
         id: "extension-sidebar",
         label: tr_key!("Active sidebar"),
         description: tr_key!("Show an enabled extension's sidebar in place of the built-in one."),
+        category: Category::Appearance,
+        section: tr_key!("Interface"),
+    },
+    Setting {
+        id: "sidebar-auto-hide",
+        label: tr_key!("Auto-hide sidebar"),
+        description: tr_key!(
+            "Hide the sidebar until the pointer nears the window's left edge, then slide it in as a floating panel over your tabs. It keeps its expanded or icon look. Toggle Sidebar shows or hides it without turning this off."
+        ),
         category: Category::Appearance,
         section: tr_key!("Interface"),
     },
@@ -775,6 +811,15 @@ pub(super) const SETTINGS: &[Setting] = &[
         section: tr_key!("Selection"),
     },
     Setting {
+        id: "selection-word-chars",
+        label: tr_key!("Word selection characters"),
+        description: tr_key!(
+            "Extra characters kept with letters and numbers when double-clicking terminal text. Leave empty to select only letters and numbers. Whitespace always separates words."
+        ),
+        category: Category::Terminal,
+        section: tr_key!("Selection"),
+    },
+    Setting {
         id: "selection-clear-on-typing",
         label: tr_key!("Clear selection when typing"),
         description: tr_key!("Remove the selected range when sending text to the terminal."),
@@ -842,6 +887,15 @@ pub(super) const SETTINGS: &[Setting] = &[
         ),
         category: Category::Terminal,
         section: tr_key!("Input"),
+    },
+    Setting {
+        id: "insert-path-recents",
+        label: tr_key!("Show recently used paths"),
+        description: tr_key!(
+            "Insert Path lists the paths you chose most recently first, shared by every terminal on a server."
+        ),
+        category: Category::Terminal,
+        section: tr_key!("Insert Path"),
     },
     Setting {
         id: "terminal-keybindings",
@@ -926,10 +980,10 @@ pub(super) const SETTINGS: &[Setting] = &[
     },
 ];
 
-/// The `tr_key!` literal accessibility clients read for the control `id`, which is
-/// the setting's label, or for a field inside a setting, what that field holds.
 pub(super) fn control_label(id: &str) -> Option<&'static str> {
     setting(id).map(|setting| setting.label).or(match id {
+        "file-pattern" => Some(tr_key!("File pattern")),
+        "file-opener" => Some(tr_key!("Open with")),
         "command-name" => Some(tr_key!("Name")),
         "command-text" => Some(tr_key!("Command")),
         "quick-width" => Some(tr_key!("Width")),
@@ -950,12 +1004,13 @@ pub(super) fn setting(id: &str) -> Option<&'static Setting> {
     SETTINGS.iter().find(|setting| setting.id == id)
 }
 
-/// Other words people search for a setting by.
 pub(super) fn search_aliases(id: &str) -> &'static str {
     match id {
         "interface-size" => "zoom density",
+        "file-rules" | "file-registrations" | "always-ask-files" => {
+            "open files with opener default custom extension associations patterns chooser"
+        }
         "extension-sidebar" => "custom replace",
-        "usage-ping" => "telemetry analytics tracking statistics",
         "server" => "stop restart connect local mac computer",
         _ => "",
     }

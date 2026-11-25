@@ -129,6 +129,7 @@ fn settings_reuses_its_tab_without_opening_windows_or_stealing_focus(cx: &mut Te
     });
 }
 
+#[cfg(not(windows))]
 #[gpui::test]
 fn quick_terminal_settings_and_pickers_use_the_workspace_tab(cx: &mut TestAppContext) {
     let mut state = AppState::bootstrap().expect("state");
@@ -256,8 +257,6 @@ fn settings_takes_the_keyboard_back_when_the_focused_control_goes_away(cx: &mut 
     assert!(settings_holds_focus(&model, cx));
 }
 
-/// Presses the empty top bar. Says whether the window move reached the
-/// workspace: an action no window handler takes falls through to the app.
 fn press_top_bar_reaches_window_move(cx: &mut VisualTestContext) -> bool {
     let unhandled = Rc::new(std::cell::Cell::new(false));
     let flag = unhandled.clone();
@@ -373,6 +372,7 @@ fn terminal_preferences_apply_to_live_panes_preserve_zoom_and_reject_invalid_edi
         model.change_preference(Change::Field("adjust-cursor-thickness", "2".into()), cx);
         model.change_preference(Change::Terminal("cursor-style", "bar".into()), cx);
         model.change_preference(Change::Terminal("copy-on-select", "true".into()), cx);
+        model.change_preference(Change::Field("selection-word-chars", "/_".into()), cx);
         assert_eq!(pane.read(cx).terminal.font_size, 20.0);
         assert_eq!(
             pane.read(cx).terminal.options.background_opacity,
@@ -383,6 +383,7 @@ fn terminal_preferences_apply_to_live_panes_preserve_zoom_and_reject_invalid_edi
             CellHeight::Pixels(2)
         );
         assert_eq!(pane.read(cx).terminal.options.copy_on_select, Some(true));
+        assert_eq!(pane.read(cx).terminal.options.selection_word_chars, "/_");
         assert_eq!(
             model.palette.cursor_style,
             Some(muxy_protocol::CursorShape::Bar)

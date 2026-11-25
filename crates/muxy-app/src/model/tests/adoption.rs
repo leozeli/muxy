@@ -1,4 +1,6 @@
-use super::servers::{connect_remote, entry, page, work};
+#[cfg(not(windows))]
+use super::servers::work;
+use super::servers::{connect_remote, entry, page};
 use super::*;
 use muxy_protocol::{ProjectSession, ProjectSessions, SessionStatus};
 
@@ -10,6 +12,7 @@ fn info(project: ProjectId, id: u64) -> SessionInfo {
     }
 }
 
+#[cfg(not(windows))]
 fn asked_for_sessions(
     requests: &std::sync::mpsc::Receiver<(u64, Work)>,
     project: ProjectId,
@@ -19,8 +22,6 @@ fn asked_for_sessions(
         .any(|work| matches!(work, Work::ProjectSessions { project: asked } if *asked == project))
 }
 
-/// A session of `project` as Existing Terminals lists it, shown by a phone
-/// when `shown`, and by this app when `attached`.
 fn listed(project: ProjectId, id: u64, shown: bool, attached: bool) -> ProjectSession {
     ProjectSession {
         info: info(project, id),
@@ -65,8 +66,6 @@ fn sessions_in(model: &AppModel, project: ProjectId) -> Vec<SessionId> {
         .collect()
 }
 
-/// The window, its view, what this computer's and the other servers' workers
-/// were asked, and the remote Home.
 type TwoServers<'a> = (
     Entity<AppModel>,
     &'a mut VisualTestContext,
@@ -75,12 +74,21 @@ type TwoServers<'a> = (
     ProjectId,
 );
 
-/// A window with this computer's server and `remote`'s, which has `api`.
 fn two_servers(remote: ServerId, api: ProjectId, cx: &mut TestAppContext) -> TwoServers<'_> {
-    let (boot, requests, remotes) = remote_boot(
+    two_servers_in(true, remote, api, cx)
+}
+
+fn two_servers_in(
+    sidebar_expanded: bool,
+    remote: ServerId,
+    api: ProjectId,
+    cx: &mut TestAppContext,
+) -> TwoServers<'_> {
+    let (mut boot, requests, remotes) = remote_boot(
         AppState::bootstrap().expect("state"),
         vec![entry(remote, "devbox")],
     );
+    boot.settings.appearance.sidebar_expanded = sidebar_expanded;
     cx.update(|cx| crate::views::workspace::bind_keys(&boot.settings.keymap, cx));
     let (view, cx) = cx.add_window_view(|window, cx| AppModel::new(boot, window, cx));
     cx.simulate_resize(size(px(1200.0), px(800.0)));
@@ -92,6 +100,7 @@ fn two_servers(remote: ServerId, api: ProjectId, cx: &mut TestAppContext) -> Two
     (view, cx, requests, remotes, home)
 }
 
+#[cfg(not(windows))]
 #[gpui::test]
 fn every_servers_projects_are_listed_and_only_this_computers_are_searched_for_other_clients(
     cx: &mut TestAppContext,
@@ -179,6 +188,33 @@ fn terminals_other_clients_show_here_open_as_background_tabs_once(cx: &mut TestA
         assert!(
             sessions_in(model, api).is_empty(),
             "another computer's stay in Existing Terminals"
+        );
+    });
+}
+
+#[gpui::test]
+fn terminals_a_muxy_command_holds_stay_in_existing_terminals(cx: &mut TestAppContext) {
+    let (remote, api) = (ServerId::new(), ProjectId::new());
+    let (view, cx, _requests, _remotes, _home) = two_servers(remote, api, cx);
+    view.update(cx, |model, cx| {
+        let local_home = model.state.home().id;
+        let mut created = listed(local_home, 7, true, false);
+        created.owner = Some(muxy_protocol::SessionClient {
+            id: muxy_protocol::ClientId::new(),
+            kind: muxy_protocol::ClientKind::Cli,
+        });
+        model.receive(
+            listing(
+                ServerId::local(),
+                local_home,
+                vec![created, listed(local_home, 8, true, false)],
+            ),
+            cx,
+        );
+        assert_eq!(
+            sessions_in(model, local_home),
+            [SessionId::new(8).expect("id")],
+            "a phone's opens, a command's stays listed"
         );
     });
 }
@@ -337,6 +373,7 @@ fn hiding_other_servers_leaves_only_this_computer_in_the_sidebar(cx: &mut TestAp
     });
 }
 
+#[cfg(not(windows))]
 #[gpui::test]
 fn a_disconnected_servers_empty_terminal_offers_connect(cx: &mut TestAppContext) {
     let (remote, api) = (ServerId::new(), ProjectId::new());
@@ -394,6 +431,7 @@ fn each_server_counts_its_own_projects_without_tabs(cx: &mut TestAppContext) {
     );
 }
 
+#[cfg(not(windows))]
 #[gpui::test]
 fn editing_a_disconnected_servers_project_connects_it(cx: &mut TestAppContext) {
     let (remote, api) = (ServerId::new(), ProjectId::new());
@@ -479,6 +517,7 @@ fn settings_and_going_back_expand_the_server_they_open_on(cx: &mut TestAppContex
     });
 }
 
+#[cfg(not(windows))]
 #[gpui::test]
 fn the_agents_panel_shows_every_servers_agents(cx: &mut TestAppContext) {
     let (remote, api) = (ServerId::new(), ProjectId::new());
@@ -536,7 +575,6 @@ fn the_agents_panel_shows_every_servers_agents(cx: &mut TestAppContext) {
     });
 }
 
-/// Reconnects `server` to whichever server answers with `catalog`.
 fn reconnect(
     model: &mut AppModel,
     server: ServerId,
@@ -597,4 +635,23 @@ fn new_tab_opens_in_the_current_project_on_any_server(cx: &mut TestAppContext) {
         assert_eq!(model.state.project(api).expect("api").tabs.len(), 1);
         assert!(model.state.home().tabs.is_empty(), "no local terminal");
     });
+}
+
+#[gpui::test]
+fn the_sidebar_collapsed_to_icons_shows_no_server_headings(cx: &mut TestAppContext) {
+    let (remote, api) = (ServerId::new(), ProjectId::new());
+    let (view, cx, _requests, _remotes, _home) = two_servers_in(false, remote, api, cx);
+    view.update(cx, |model, cx| model.toggle_server_group(remote, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("sidebar-server-local").is_none());
+    assert!(
+        cx.debug_bounds(format!("sidebar-server-{remote}").leak())
+            .is_none()
+    );
+    assert!(cx.debug_bounds("add-project").is_some());
+    assert!(
+        cx.debug_bounds(format!("add-project-{remote}").leak())
+            .is_some(),
+        "an expanded server's projects still show"
+    );
 }

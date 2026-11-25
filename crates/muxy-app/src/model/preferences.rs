@@ -14,14 +14,12 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 pub(crate) enum Change {
     Composer(ComposerToggle, bool),
     QuickTerminal(muxy_app_core::settings::QuickTerminalSettings),
-    /// One Quick Terminal number, such as `quick-width`, set on the saved settings.
     QuickNumber(&'static str, u16),
     Theme(bool, String),
     Sidebar(bool),
+    SidebarAutoHide(bool),
     SidebarVibrancy(bool),
-    /// The extension whose sidebar replaces the built-in one; empty for built-in.
     ExtensionSidebar(String),
-    /// The app language as `<extension>:<localization>`; empty for English.
     Language(String),
     Worktrees(WorktreeToggle, bool),
     SidebarCollapsedStyle(muxy_app_core::settings::SidebarCollapsedStyle),
@@ -32,26 +30,31 @@ pub(crate) enum Change {
     AgentsPanelDensity(muxy_app_core::settings::AgentsPanelDensity),
     AgentsPanelOption(AgentsPanelToggle, bool),
     StatusBar(bool),
+    Rail(bool),
     PaneHeaders(bool),
+    OpenInAppButton(bool),
     Tips(bool),
     RememberProjectsWithoutTabs(bool),
     SidebarServers(bool),
     ConfirmProcess(bool),
-    UsagePing(bool),
     CloseBehavior(muxy_app_core::settings::CloseBehavior),
     Terminal(&'static str, String),
     TerminalEdit(TerminalEdit),
     ResetTerminal,
-    /// `[openers] file`: a built-in opener, or `<extension>:<opener>`.
-    FileOpener(String),
-    /// `[openers] project_target`: the app the Open in IDE control opens.
+    FileRule {
+        previous: Option<String>,
+        rule: muxy_app_core::opener::FileRule,
+    },
+    RemoveFileRule(String),
+    MoveFileRule(String, bool),
+    AlwaysAskFiles(bool),
     ProjectTarget(String),
     Directory(muxy_app_core::settings::NewPaneDirectory),
+    InsertPathRecents(bool),
     Field(&'static str, String),
     Binding(String, Option<muxy_app_core::settings::KeyChord>),
     Command(muxy_app_core::settings::CustomCommand),
     RemoveCommand(String),
-    /// Removes an extension command's shortcut.
     Unassign(String),
     ShellIntegration(bool),
     Browser(BrowserChange),
@@ -67,11 +70,7 @@ pub(crate) enum BrowserChange {
     RenameProfile(String, String),
     ClearProfile(String),
     DeleteProfile(String),
-    /// Imports from the listed browser at `source` into the default profile.
-    Import {
-        source: usize,
-        cookies: bool,
-    },
+    Import { source: usize, cookies: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -177,7 +176,15 @@ impl AppModel {
         }
     }
 
-    /// Opens Settings at Browser, where profiles are managed.
+    pub(crate) fn show_keyboard_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_settings(window, cx) {
+            return;
+        }
+        if let Some(settings) = &self.settings_tab {
+            settings.view.update(cx, SettingsView::show_keyboard);
+        }
+    }
+
     pub(crate) fn show_browser_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_settings(window, cx);
         if let Some(settings) = &self.settings_tab {
@@ -185,7 +192,6 @@ impl AppModel {
         }
     }
 
-    /// Opens Settings at Servers and reads which clients may reach this computer.
     pub(crate) fn show_servers_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.show_settings(window, cx) {
             return;
@@ -195,6 +201,30 @@ impl AppModel {
         }
         self.client_access.show_page();
         self.sync_servers_page(true, cx);
+    }
+
+    pub(crate) fn show_settings_category(
+        &mut self,
+        category: crate::views::settings::Category,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::views::settings::Category;
+        match category {
+            Category::Servers => self.show_servers_settings(window, cx),
+            Category::Extensions => self.show_extensions_settings(window, cx),
+            Category::About => self.show_about_settings(window, cx),
+            category => {
+                if !self.show_settings(window, cx) {
+                    return;
+                }
+                if let Some(settings) = &self.settings_tab {
+                    settings.view.update(cx, |view, cx| {
+                        view.select_category(category, None, window, cx);
+                    });
+                }
+            }
+        }
     }
 
     pub(super) fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -411,6 +441,24 @@ impl AppModel {
         self.path.with_file_name(filename)
     }
 
+    pub(crate) fn try_change_preference(
+        &mut self,
+        change: Change,
+        cx: &mut Context<Self>,
+    ) -> std::result::Result<(), String> {
+        if self.quitting != Quitting::Idle {
+            return Err("the app is quitting".into());
+        }
+        let id = change_id(&change).to_owned();
+        let result = self
+            .apply_preference(change, cx)
+            .map_err(|error| error.to_string());
+        self.preference_result(&id, result.as_ref().err().map(String::as_str), cx);
+        self.sync_preferences(cx);
+        cx.notify();
+        result
+    }
+
     pub(crate) fn change_preference(&mut self, change: Change, cx: &mut Context<Self>) {
         if self.quitting != Quitting::Idle {
             return;
@@ -437,12 +485,15 @@ impl AppModel {
         } else {
             let theme_change = matches!(change, Change::Theme(..));
             let target_change = matches!(change, Change::ProjectTarget(_));
+            let file_change = matches!(change, Change::FileRule { .. });
             let result = self.apply_preference(change, cx);
             let error = result.err().map(|error| error.to_string());
             self.preference_result(&id, error.as_deref(), cx);
             if let Some(error) = error {
                 if theme_change {
                     self.fail(tr!("Could not save theme: %@", &error).to_string(), cx);
+                } else if file_change {
+                    self.fail(tr!("Could not save file rule: %@", &error).to_string(), cx);
                 } else if target_change {
                     self.fail(
                         tr!("Could not save the default app: %@", &error).to_string(),
@@ -532,6 +583,10 @@ impl AppModel {
                 settings.appearance.sidebar_expanded = value;
                 settings.appearance = settings.appearance.save_changes(&self.appearance, &path)?;
             }
+            Change::SidebarAutoHide(value) => {
+                settings.appearance.sidebar_auto_hide = value;
+                settings.appearance = settings.appearance.save_changes(&self.appearance, &path)?;
+            }
             Change::SidebarCollapsedStyle(style) => {
                 settings.appearance.sidebar_collapsed_style = style;
                 settings.appearance = settings.appearance.save_changes(&self.appearance, &path)?;
@@ -603,8 +658,16 @@ impl AppModel {
                 settings.appearance.status_bar_visible = value;
                 settings.appearance = settings.appearance.save_changes(&self.appearance, &path)?;
             }
+            Change::Rail(value) => {
+                settings.appearance.rail_enabled = value;
+                settings.appearance = settings.appearance.save_changes(&self.appearance, &path)?;
+            }
             Change::PaneHeaders(value) => {
                 settings.appearance.pane_headers = value;
+                settings.appearance = settings.appearance.save_changes(&self.appearance, &path)?;
+            }
+            Change::OpenInAppButton(value) => {
+                settings.appearance.open_in_app_button = value;
                 settings.appearance = settings.appearance.save_changes(&self.appearance, &path)?;
             }
             Change::Tips(value) => {
@@ -632,12 +695,57 @@ impl AppModel {
                 settings.window.close_behavior = value;
                 settings.save_window(&path)?;
             }
-            Change::UsagePing(value) => {
-                settings.privacy.usage_ping = value;
-                settings.save_privacy(&path)?;
+            Change::FileRule { previous, rule } => {
+                let rule = muxy_app_core::opener::FileRule {
+                    pattern: rule.pattern.trim().to_owned(),
+                    ..rule
+                };
+                rule.validate()?;
+                let rules = &mut settings.openers.file_rules;
+                let keep = |existing: &muxy_app_core::opener::FileRule| {
+                    !existing.pattern.eq_ignore_ascii_case(&rule.pattern)
+                        && !previous
+                            .as_ref()
+                            .is_some_and(|pattern| existing.pattern.eq_ignore_ascii_case(pattern))
+                };
+                let position = previous
+                    .as_ref()
+                    .and_then(|pattern| {
+                        rules
+                            .iter()
+                            .position(|rule| rule.pattern.eq_ignore_ascii_case(pattern))
+                    })
+                    .map_or(0, |position| {
+                        rules[..position]
+                            .iter()
+                            .filter(|existing| keep(existing))
+                            .count()
+                    });
+                rules.retain(keep);
+                rules.insert(position, rule);
+                settings.save_openers(&path)?;
             }
-            Change::FileOpener(value) => {
-                settings.openers.file = value;
+            Change::RemoveFileRule(pattern) => {
+                settings
+                    .openers
+                    .file_rules
+                    .retain(|rule| rule.pattern != pattern);
+                settings.save_openers(&path)?;
+            }
+            Change::MoveFileRule(pattern, up) => {
+                let rules = &mut settings.openers.file_rules;
+                if let Some(index) = rules.iter().position(|rule| rule.pattern == pattern) {
+                    let next = if up {
+                        index.saturating_sub(1)
+                    } else {
+                        (index + 1).min(rules.len() - 1)
+                    };
+                    rules.swap(index, next);
+                }
+                settings.save_openers(&path)?;
+            }
+            Change::AlwaysAskFiles(value) => {
+                settings.openers.always_ask = value;
                 settings.save_openers(&path)?;
             }
             Change::ProjectTarget(value) => {
@@ -646,6 +754,10 @@ impl AppModel {
             }
             Change::Directory(value) => {
                 settings.panes.new_pane_directory = value;
+                settings.save_panes(&path)?;
+            }
+            Change::InsertPathRecents(value) => {
+                settings.panes.insert_path_recents = value;
                 settings.save_panes(&path)?;
             }
             Change::Command(command) => {
@@ -730,9 +842,9 @@ impl AppModel {
                     *terminal = muxy_app_core::settings::TerminalSettings::default();
                     Ok(())
                 })?;
-                let directory = muxy_app_core::settings::NewPaneDirectory::default();
-                if settings.panes.new_pane_directory != directory {
-                    settings.panes.new_pane_directory = directory;
+                let panes = muxy_app_core::settings::PaneSettings::default();
+                if settings.panes != panes {
+                    settings.panes = panes;
                     settings.save_panes(&path)?;
                 }
             }
@@ -742,7 +854,6 @@ impl AppModel {
         Ok(())
     }
 
-    /// Makes `settings`, already saved, the ones the app runs with.
     fn adopt_settings(
         &mut self,
         settings: muxy_app_core::settings::Settings,
@@ -784,9 +895,6 @@ impl AppModel {
         }
     }
 
-    /// Applies `settings.toml` and `terminal.toml` as they are on disk now,
-    /// after something other than this app changed them, such as
-    /// `muxy config`. Remote servers keep the list the app connected.
     pub(crate) fn reload_settings(
         &mut self,
         cx: &mut Context<Self>,
@@ -814,7 +922,6 @@ impl AppModel {
         reloaded
     }
 
-    /// Settings edits not saved yet, such as text still being typed.
     fn take_pending_preferences(&mut self, cx: &mut Context<Self>) -> Vec<Change> {
         self.settings_tab
             .as_ref()
@@ -1007,9 +1114,6 @@ impl AppModel {
         self.preview_terminal_preferences(next, cx);
     }
 
-    /// Shows `next` in the terminals while a slider moves, without the work a
-    /// saved change does: the theme stays resolved and Settings keeps the
-    /// value it shows itself until the slider is released.
     fn preview_terminal_preferences(
         &mut self,
         next: muxy_app_core::settings::TerminalSettings,
@@ -1204,8 +1308,6 @@ impl AppModel {
         self.sync_preferences(cx);
     }
 
-    /// A stopped server counts as disconnected. Restarting connects again,
-    /// which starts it, over SSH too.
     pub(super) fn receive_server_stopped(
         &mut self,
         server: ServerId,
@@ -1240,7 +1342,6 @@ impl AppModel {
         self.sync_preferences(cx);
     }
 
-    /// Asks before stopping or restarting `server`, which ends its sessions.
     pub(crate) fn confirm_server_control(
         &mut self,
         server: ServerId,
@@ -1295,6 +1396,7 @@ fn terminal_field(id: &str) -> bool {
     matches!(
         id,
         "font-feature"
+            | "selection-word-chars"
             | "background"
             | "foreground"
             | "cursor-color"
@@ -1311,6 +1413,7 @@ fn change_id(change: &Change) -> &str {
         Change::Theme(false, _) => "light-theme",
         Change::Theme(true, _) => "dark-theme",
         Change::Sidebar(_) => "sidebar",
+        Change::SidebarAutoHide(_) => "sidebar-auto-hide",
         Change::SidebarVibrancy(_) => "sidebar-vibrancy",
         Change::ExtensionSidebar(_) => "extension-sidebar",
         Change::Language(_) => "app-language",
@@ -1323,16 +1426,21 @@ fn change_id(change: &Change) -> &str {
         Change::AgentsPanelIcon(_) => "agents-panel-icon",
         Change::AgentsPanelDensity(_) => "agents-panel-density",
         Change::StatusBar(_) => "status-bar",
+        Change::Rail(_) => "rail",
         Change::PaneHeaders(_) => "pane-headers",
+        Change::OpenInAppButton(_) => "open-in-app-button",
         Change::Tips(_) => "tips",
         Change::RememberProjectsWithoutTabs(_) => "remember-projects-without-tabs",
         Change::SidebarServers(_) => "sidebar-servers",
         Change::ConfirmProcess(_) => "confirm-process",
-        Change::UsagePing(_) => "usage-ping",
         Change::CloseBehavior(_) => "close-behavior",
-        Change::FileOpener(_) => "file-opener",
+        Change::FileRule { .. } | Change::RemoveFileRule(_) | Change::MoveFileRule(..) => {
+            "file-rules"
+        }
+        Change::AlwaysAskFiles(_) => "always-ask-files",
         Change::ProjectTarget(_) => "project-target",
         Change::Directory(_) => "directory",
+        Change::InsertPathRecents(_) => "insert-path-recents",
         Change::Terminal("padding-left" | "padding-right", _) => "window-padding-x",
         Change::Terminal("padding-top" | "padding-bottom", _) => "window-padding-y",
         Change::Terminal("dismiss-import-notes", _) => "terminal-import-notes",
@@ -1360,7 +1468,6 @@ fn change_id(change: &Change) -> &str {
     }
 }
 
-/// `browser` with a change that lives in `settings.toml`.
 fn browser_settings(
     mut browser: muxy_app_core::settings::BrowserSettings,
     change: BrowserChange,

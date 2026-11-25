@@ -96,7 +96,14 @@ impl Composer {
             })
             .rounded(m.radius_xl())
             .child(SymbolGlyph::new(symbol, glyph_size, color))
-            .tooltip(muxy_ui::components::tooltip(translate(label), &theme))
+            .tooltip(muxy_ui::components::tooltip(
+                if id == "composer-close" {
+                    muxy_ui::shortcuts::tooltip_text(translate(label), &Close, cx)
+                } else {
+                    translate(label)
+                },
+                &theme,
+            ))
             .button_interaction(cx.listener(move |view, _, window, cx| action(view, window, cx)))
             .into_any_element()
     }
@@ -189,6 +196,11 @@ impl Composer {
                     view.preferences(cx);
                 });
             },
+        )
+        .shortcut(
+            matches!(control, PanelControl::Close)
+                .then(|| muxy_ui::shortcuts::key_for(&Close, cx))
+                .flatten(),
         )
     }
 
@@ -648,29 +660,6 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let m = self.metrics;
-        let group = match edge {
-            ResizeEdge::Leading => "composer-leading-grip",
-            ResizeEdge::Trailing => "composer-trailing-grip",
-            ResizeEdge::Bottom => "composer-bottom-grip",
-        };
-        let active = self
-            .floating_resize
-            .is_some_and(|(_, _, active)| active == edge);
-        let grip = div()
-            .rounded_full()
-            .bg(self.theme.fg_muted)
-            .opacity(if active { 0.8 } else { 0.0 })
-            .w(m.scaled(if edge == ResizeEdge::Bottom {
-                28.0
-            } else {
-                3.0
-            }))
-            .h(m.scaled(if edge == ResizeEdge::Bottom {
-                3.0
-            } else {
-                28.0
-            }))
-            .group_hover(group, |style| style.opacity(0.8));
         let handle = div()
             .id(match edge {
                 ResizeEdge::Leading => "composer-resize-leading",
@@ -678,11 +667,6 @@ impl Composer {
                 ResizeEdge::Bottom => "composer-resize-bottom",
             })
             .absolute()
-            .group(group)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(grip)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {

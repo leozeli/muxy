@@ -1,14 +1,21 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 mod ai;
 mod app_socket;
 mod askpass;
 mod backup;
 mod boot;
 mod cli_install;
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "Attaching to the console of the caller")]
+mod console;
 mod diagnostics;
 mod extensions;
 mod favicon;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod instance;
+#[cfg(test)]
+mod localization_tests;
 mod model;
 mod navigation;
 mod opener;
@@ -19,9 +26,10 @@ mod proxy;
 mod remote_install;
 mod repository_actions;
 mod server;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod updater;
-mod usage_ping;
 mod views {
     pub(crate) mod agent_sessions;
     pub(crate) mod agents_panel;
@@ -34,6 +42,7 @@ mod views {
     pub(crate) mod confirm;
     pub(crate) mod disconnected;
     pub(crate) mod extension_agent;
+    pub(crate) mod file_opener;
     pub(crate) mod floating;
     pub(crate) mod floating_tab;
     pub(crate) mod font_picker;
@@ -51,6 +60,7 @@ mod views {
     pub(crate) mod project_picker;
     pub(crate) mod proxy;
     pub(crate) mod quick_terminal;
+    pub(crate) mod rail;
     pub(crate) mod remote_servers;
     pub(crate) mod server_menu;
     pub(crate) mod server_status;
@@ -78,6 +88,7 @@ mod views {
         pub(crate) mod find;
         pub(crate) mod ime;
         pub(crate) mod input;
+        pub(crate) mod insert_path;
         pub(crate) mod links;
         pub(crate) mod pane;
         pub(crate) mod scroll;
@@ -113,11 +124,16 @@ use views::workspace::{
     ToggleFullScreen, ToggleSidebar, ToggleThemePicker, ToggleZoomPane, Zoom, bind_keys,
 };
 
+#[cfg(windows)]
+pub(crate) const NO_WINDOW: u32 = windows::Win32::System::Threading::CREATE_NO_WINDOW.0;
+
 fn main() -> ExitCode {
     if std::env::args_os()
         .nth(1)
         .is_some_and(|argument| argument == "--build-info")
     {
+        #[cfg(windows)]
+        console::attach();
         return match serde_json::to_writer(
             io::stdout().lock(),
             &muxy_protocol::BuildInfo::current(),
@@ -131,6 +147,11 @@ fn main() -> ExitCode {
         .is_some_and(|argument| argument == proxy::TUNNEL)
     {
         return proxy::run_tunnel(std::env::args_os().skip(2));
+    }
+    #[cfg(windows)]
+    {
+        muxy_ui::notifications::identify_process();
+        let _ = muxy_ui::registry::register_url_scheme();
     }
     run()
 }
@@ -165,9 +186,9 @@ fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (folders, opened_folders) = async_channel::unbounded();
-    #[cfg(target_os = "linux")]
-    let _instance = match instance::claim(std::env::args_os().skip(1), &folders) {
+    let (opened, opened_urls) = async_channel::unbounded();
+    #[cfg(any(target_os = "linux", windows))]
+    let _instance = match instance::claim(std::env::args_os().skip(1), &opened) {
         Ok(Some(instance)) => instance,
         Ok(None) => return ExitCode::SUCCESS,
         Err(error) => {
@@ -191,7 +212,7 @@ fn run() -> ExitCode {
     muxy_ui::native_scroll::use_overlay_scrollers();
     let application = Application::new().with_assets(muxy_ui::assets::Assets);
     application.on_open_urls(move |urls| {
-        let _ = folders.try_send(urls);
+        let _ = opened.try_send(urls);
     });
     let exit_code = Rc::new(Cell::new(ExitCode::SUCCESS));
     let startup_exit_code = exit_code.clone();
@@ -208,10 +229,9 @@ fn run() -> ExitCode {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(640.0), px(400.0))),
-            window_background: WindowBackgroundAppearance::Transparent,
+            window_background: window_background(),
             #[cfg(target_os = "linux")]
             window_decorations: Some(gpui::WindowDecorations::Client),
-            // Empty titlebar space explicitly starts native movement, not tab presses.
             is_movable: !cfg!(target_os = "macos"),
             titlebar: Some(TitlebarOptions {
                 title: Some(app_name().into()),
@@ -224,7 +244,7 @@ fn run() -> ExitCode {
             #[cfg(target_os = "linux")]
             window.set_window_title(app_name());
             let model = cx.new(|cx| AppModel::new(boot, window, cx));
-            model.update(cx, |_, cx| AppModel::open_folders_from(opened_folders, cx));
+            model.update(cx, |_, cx| AppModel::open_urls_from(opened_urls, cx));
             model.update(cx, |model, cx| model.start_app_socket(window, cx));
             let configuration = model.downgrade();
             cx.on_action(move |_: &views::workspace::ReloadConfiguration, cx| {
@@ -264,7 +284,23 @@ fn restored_bounds(boot: &boot::Boot, cx: &App) -> Bounds<gpui::Pixels> {
         );
     }
     let [width, height] = boot.settings.window.default_size;
-    Bounds::centered(None, size(px(width), px(height)), cx)
+    let mut default = size(px(width), px(height));
+    if cfg!(windows)
+        && let Some(display) = cx.primary_display()
+    {
+        let room = display.bounds().size;
+        default.width = default.width.min(room.width * 0.9);
+        default.height = default.height.min(room.height * 0.9);
+    }
+    Bounds::centered(None, default, cx)
+}
+
+fn window_background() -> WindowBackgroundAppearance {
+    if cfg!(windows) {
+        WindowBackgroundAppearance::Opaque
+    } else {
+        WindowBackgroundAppearance::Transparent
+    }
 }
 
 fn app_name() -> &'static str {
@@ -301,14 +337,27 @@ fn menus() -> Vec<Menu> {
         menu_item(FocusPaneDown),
         menu_item(ToggleZoomPane),
         menu_item(EqualizeSplits),
+        menu_item(views::workspace::FocusNextPane),
+        menu_item(views::workspace::FocusPreviousPane),
+        menu_item(views::workspace::ResizePaneLeft),
+        menu_item(views::workspace::ResizePaneRight),
+        menu_item(views::workspace::ResizePaneUp),
+        menu_item(views::workspace::ResizePaneDown),
         menu_item(ClosePane),
         menu_item(CloseTab),
         MenuItem::separator(),
         menu_item(NextTab),
         menu_item(PreviousTab),
+        menu_item(views::workspace::MoveTabLeft),
+        menu_item(views::workspace::MoveTabRight),
+        menu_item(views::workspace::RenameTab),
+        MenuItem::separator(),
+        menu_item(views::workspace::NavigateBack),
+        menu_item(views::workspace::NavigateForward),
         MenuItem::separator(),
         menu_item(PreviousProject),
         menu_item(NextProject),
+        menu_item(views::workspace::SwitchProject),
         MenuItem::separator(),
     ];
     window_items.extend(
@@ -327,6 +376,7 @@ fn menus() -> Vec<Menu> {
         ]);
     }
     app_items.push(menu_item(OpenSettings));
+    app_items.push(menu_item(views::workspace::OpenKeyboardShortcuts));
     if backends.has_backend(Feature::Updates) {
         app_items.push(menu_item(CheckForUpdates));
     }
@@ -353,6 +403,7 @@ fn menus() -> Vec<Menu> {
         menu_item(ToggleAgentsPanel),
         menu_item(ToggleAgentSessions),
         menu_item(ToggleFloatingTerminals),
+        menu_item(views::workspace::ToggleStatusBar),
         menu_item(ToggleFullScreen),
         MenuItem::separator(),
         menu_item(ToggleThemePicker),
@@ -405,7 +456,6 @@ fn menus() -> Vec<Menu> {
             items: view_items,
         },
         Menu {
-            // GPUI hands macOS the window list only for a menu named "Window".
             name: "Window".into(),
             items: window_items,
         },

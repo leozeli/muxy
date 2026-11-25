@@ -12,9 +12,19 @@ type Resolve = fn(&[String]) -> Result<BTreeMap<String, String>, String>;
 
 pub(crate) const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
+#[derive(Debug, Default, PartialEq)]
+pub(crate) enum UpdateCheck {
+    #[default]
+    Idle,
+    Checking,
+    Complete,
+    Failed(String),
+}
+
 #[derive(Default)]
 pub(super) struct Checks {
     available: BTreeMap<String, String>,
+    status: UpdateCheck,
     task: Option<Task<()>>,
     schedule: Option<Task<()>>,
     #[cfg(test)]
@@ -34,6 +44,10 @@ impl Checks {
 }
 
 impl AppModel {
+    pub(crate) fn extension_update_check(&self) -> &UpdateCheck {
+        &self.extensions.checks.status
+    }
+
     pub(crate) fn extension_update_version(&self, name: &str) -> Option<&str> {
         self.extensions
             .checks
@@ -46,17 +60,33 @@ impl AppModel {
         self.extensions.checks.available.len()
     }
 
-    /// Checks now, then keeps the count fresh while the app stays open.
+    #[cfg(test)]
+    pub(crate) fn offer_extension_update(&mut self, name: &str, version: &str) {
+        self.extensions
+            .checks
+            .available
+            .insert(name.to_owned(), version.to_owned());
+    }
+
     pub(super) fn start_extension_update_checks(&mut self, cx: &mut Context<Self>) {
-        self.check_extension_updates(cx);
+        self.check_extension_updates_if_enabled(cx);
         self.extensions.checks.schedule = Some(cx.spawn(async move |model, cx| {
             loop {
                 cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
-                if model.update(cx, Self::check_extension_updates).is_err() {
+                if model
+                    .update(cx, Self::check_extension_updates_if_enabled)
+                    .is_err()
+                {
                     break;
                 }
             }
         }));
+    }
+
+    pub(crate) fn check_extension_updates_if_enabled(&mut self, cx: &mut Context<Self>) {
+        if self.settings.privacy.check_extension_updates {
+            self.check_extension_updates(cx);
+        }
     }
 
     pub(crate) fn check_extension_updates(&mut self, cx: &mut Context<Self>) {
@@ -88,8 +118,11 @@ impl AppModel {
             .collect();
         if names.is_empty() {
             self.extensions.checks.available.clear();
+            self.extensions.checks.status = UpdateCheck::Complete;
+            cx.notify();
             return;
         }
+        self.extensions.checks.status = UpdateCheck::Checking;
         self.extensions.checks.task = Some(cx.spawn(async move |model, cx| {
             let result = io::network(move || {
                 let mut versions = resolve(&names)?;
@@ -104,15 +137,20 @@ impl AppModel {
                     Ok(versions) => {
                         extensions.checks.available = versions;
                         extensions.checks.retain_installed(&extensions.registry);
-                        cx.notify();
+                        extensions.checks.status = UpdateCheck::Complete;
                     }
-                    Err(error) => crate::diagnostics::event(
-                        "extension-update-check-failed",
-                        format_args!("{error}"),
-                    ),
+                    Err(error) => {
+                        crate::diagnostics::event(
+                            "extension-update-check-failed",
+                            format_args!("{error}"),
+                        );
+                        extensions.checks.status = UpdateCheck::Failed(error);
+                    }
                 }
+                cx.notify();
             });
         }));
+        cx.notify();
     }
 }
 
